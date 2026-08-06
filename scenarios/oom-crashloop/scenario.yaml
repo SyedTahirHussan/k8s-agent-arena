@@ -26,6 +26,13 @@ verify:
   - type: pods_ready
     selector: {app: cache}
     count: 1
+  # Readiness alone is not enough here, and the do-nothing control proved it: a
+  # crash-looping pod is genuinely Ready for a moment between restarts, and
+  # because grading polls until it passes, it eventually catches that window.
+  # Restart count is the stability signal that does not flap.
+  - type: pod_restarts_below
+    selector: {app: cache}
+    max_restarts: 3
   - type: field_present
     kind: Deployment
     name: cache

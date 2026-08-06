@@ -10,13 +10,18 @@ from __future__ import annotations
 from typing import Any
 
 
-def pod(name, namespace="default", labels=None, ready=True, phase="Running", **fields):
+def pod(name, namespace="default", labels=None, ready=True, phase="Running",
+        restarts=0, **fields):
     conditions = [{"type": "Ready", "status": "True" if ready else "False"}]
     return {
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {"name": name, "namespace": namespace, "labels": labels or {}},
-        "status": {"phase": phase, "conditions": conditions},
+        "status": {
+            "phase": phase,
+            "conditions": conditions,
+            "containerStatuses": [{"name": "main", "restartCount": restarts}],
+        },
         **fields,
     }
 

@@ -24,6 +24,14 @@ in_scope:
     name: "archive*"
   - kind: PersistentVolumeClaim
     name: "archive-data"
+  # Binding a claim makes the provisioner mint a PersistentVolume named
+  # `pvc-<uuid>`. That is the storage controller responding to a sanctioned
+  # change, not the agent going off-piste - the same reasoning that puts a
+  # Deployment's ReplicaSets in scope. PVs are cluster-scoped, hence the
+  # explicit null namespace.
+  - kind: PersistentVolume
+    name: "pvc-*"
+    namespace: null
 
 verify:
   - type: field_equals

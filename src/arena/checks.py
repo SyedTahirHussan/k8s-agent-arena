@@ -137,6 +137,50 @@ class FieldEquals:
 
 
 @dataclass(frozen=True)
+class PodRestartsBelow:
+    """No matching pod has restarted more than ``max_restarts`` times.
+
+    Readiness alone cannot tell a healthy pod from a crash-looping one. A pod in
+    CrashLoopBackOff is genuinely Ready for a moment between restarts, and since
+    grading polls until it passes, `PodsReady` will eventually catch that window
+    and call a broken workload fixed. Restart count is the stability signal that
+    does not flap.
+    """
+
+    namespace: str
+    selector: dict[str, str]
+    max_restarts: int
+
+    def evaluate(self, cluster: ClusterView) -> CheckResult:
+        selector = dict(self.selector)
+        pods = cluster.list("Pod", self.namespace, selector)
+        labels = ",".join(f"{k}={v}" for k, v in selector.items())
+        description = (
+            f"pods matching {labels} have restarted fewer than "
+            f"{self.max_restarts} time(s)"
+        )
+
+        if not pods:
+            return CheckResult(
+                False, description, f"no pods match {labels} in {self.namespace}"
+            )
+
+        worst = max(
+            max((c.get("restartCount", 0) for c in p.get("status", {}).get("containerStatuses", [])),
+                default=0)
+            for p in pods
+        )
+        if worst >= self.max_restarts:
+            return CheckResult(
+                False,
+                description,
+                f"a container has restarted {worst} time(s), at or above the "
+                f"limit of {self.max_restarts} - the workload is not stable",
+            )
+        return CheckResult(True, description, f"worst restart count is {worst}")
+
+
+@dataclass(frozen=True)
 class FieldPresent:
     """A field at ``path`` is set, whatever its value.
 

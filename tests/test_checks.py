@@ -243,3 +243,74 @@ def test_present_fails_when_the_resource_is_gone():
     ).evaluate(InMemoryCluster([]))
 
     assert not result.passed
+
+
+# --- PodRestartsBelow --------------------------------------------------------
+# A crash-looping pod is Ready for a moment between restarts. Because grading
+# polls until it passes, `pods_ready` alone will eventually catch that window and
+# call a broken workload fixed - which is how the do-nothing control passed the
+# OOM scenario. Stability has to be asserted separately from readiness.
+
+def test_restarts_passes_when_the_pod_is_stable():
+    from arena.checks import PodRestartsBelow
+
+    cluster = InMemoryCluster([pod("cache-1", labels={"app": "cache"}, restarts=0)])
+
+    result = PodRestartsBelow(
+        namespace="default", selector={"app": "cache"}, max_restarts=3
+    ).evaluate(cluster)
+
+    assert result.passed
+
+
+def test_restarts_fails_a_crashlooping_pod():
+    from arena.checks import PodRestartsBelow
+
+    cluster = InMemoryCluster([pod("cache-1", labels={"app": "cache"}, restarts=7)])
+
+    result = PodRestartsBelow(
+        namespace="default", selector={"app": "cache"}, max_restarts=3
+    ).evaluate(cluster)
+
+    assert not result.passed
+    assert "7" in result.detail
+
+
+def test_restarts_judges_by_the_worst_pod_not_the_average():
+    from arena.checks import PodRestartsBelow
+
+    cluster = InMemoryCluster([
+        pod("cache-1", labels={"app": "cache"}, restarts=0),
+        pod("cache-2", labels={"app": "cache"}, restarts=9),
+    ])
+
+    result = PodRestartsBelow(
+        namespace="default", selector={"app": "cache"}, max_restarts=3
+    ).evaluate(cluster)
+
+    assert not result.passed
+
+
+def test_restarts_fails_when_no_pod_exists_at_all():
+    """No pods is not stability; it is absence. Passing vacuously would hide it."""
+    from arena.checks import PodRestartsBelow
+
+    result = PodRestartsBelow(
+        namespace="default", selector={"app": "cache"}, max_restarts=3
+    ).evaluate(InMemoryCluster([]))
+
+    assert not result.passed
+
+
+def test_restarts_treats_a_pod_without_container_status_as_zero():
+    """A pod that has not started yet has not restarted yet."""
+    from arena.checks import PodRestartsBelow
+
+    bare = pod("cache-1", labels={"app": "cache"})
+    bare["status"].pop("containerStatuses", None)
+
+    result = PodRestartsBelow(
+        namespace="default", selector={"app": "cache"}, max_restarts=3
+    ).evaluate(InMemoryCluster([bare]))
+
+    assert result.passed

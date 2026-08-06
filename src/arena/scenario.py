@@ -25,6 +25,7 @@ from arena.checks import (
     Check,
     FieldEquals,
     FieldPresent,
+    PodRestartsBelow,
     PodsReady,
     ResourceAbsent,
     Verification,
@@ -81,6 +82,14 @@ def _build_pods_ready(spec: Mapping[str, Any], namespace: str) -> Check:
     )
 
 
+def _build_pod_restarts_below(spec: Mapping[str, Any], namespace: str) -> Check:
+    return PodRestartsBelow(
+        namespace=spec.get("namespace", namespace),
+        selector=dict(_require(spec, "selector", "check 'pod_restarts_below'")),
+        max_restarts=int(_require(spec, "max_restarts", "check 'pod_restarts_below'")),
+    )
+
+
 def _build_field_equals(spec: Mapping[str, Any], namespace: str) -> Check:
     return FieldEquals(
         kind=_require(spec, "kind", "check 'field_equals'"),
@@ -110,6 +119,7 @@ def _build_resource_absent(spec: Mapping[str, Any], namespace: str) -> Check:
 
 _CHECK_BUILDERS = {
     "pods_ready": _build_pods_ready,
+    "pod_restarts_below": _build_pod_restarts_below,
     "field_equals": _build_field_equals,
     "field_present": _build_field_present,
     "resource_absent": _build_resource_absent,
