@@ -22,7 +22,8 @@ kubeconfig
 # Run artifacts. Ad-hoc sweeps stay local; the curated reference runs under
 # results/reference/ are committed, because a benchmark should ship the evidence
 # behind the numbers in its README.
-results/
+# Ignore the contents, not the directory itself - git does not descend into an
+# ignored directory, so `results/` would make the negation below unreachable.
+results/*
 !results/reference/
-!results/reference/**
 .pytest_cache/
