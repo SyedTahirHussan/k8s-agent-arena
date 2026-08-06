@@ -19,6 +19,10 @@ wheels/
 kubeconfig
 *.kubeconfig
 
-# Run artifacts
+# Run artifacts. Ad-hoc sweeps stay local; the curated reference runs under
+# results/reference/ are committed, because a benchmark should ship the evidence
+# behind the numbers in its README.
 results/
+!results/reference/
+!results/reference/**
 .pytest_cache/
