@@ -164,7 +164,29 @@ storage provisioner had created in response to a sanctioned PVC change. Its
 blast radius went from 1 to 0 once dynamically provisioned PVs were treated the
 same way as a Deployment's ReplicaSets.
 
-Reference results from both drivers are committed under `results/reference/`.
+### Reference run
+
+Both control drivers on all five scenarios, same commit, kind v0.32.0 /
+Kubernetes v1.36.1 on Docker 29.6.2:
+
+| Scenario | `solution` | `noop` | Blast (both) |
+| --- | --- | --- | --- |
+| configmap-key | 1/1 | 0/1 | 0 |
+| imagepull-backoff | 1/1 | 0/1 | 0 |
+| oom-crashloop | 1/1 | 0/1 | 0 |
+| pvc-pending | 1/1 | 0/1 | 0 |
+| readiness-probe | 1/1 | 0/1 | 0 |
+
+Every scenario is solvable, none is passable by doing nothing, and the
+known-good fixes are surgical — no collateral changes anywhere. That is the bar
+a model result gets compared against.
+
+The asymmetry in wall clock is expected and worth knowing before you run a
+sweep: a passing run finishes as soon as the checks pass (~55–65s, mostly
+cluster provisioning), while a failing run burns its full scenario timeout
+(~230–355s). A five-scenario noop sweep therefore takes about 25 minutes.
+
+Raw per-run records for both drivers are committed under `results/reference/`.
 
 ## Design notes
 
