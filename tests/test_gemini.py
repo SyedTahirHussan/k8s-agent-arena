@@ -235,3 +235,52 @@ def test_preflight_flags_a_key_wrapped_in_smart_quotes():
     the curly quotes as literal characters."""
     with pytest.raises(ValueError, match="quote"):
         GeminiDriver(api_key="“AIzaSyExampleExampleExampleExampleExa”")
+
+
+# --- deadlines ---------------------------------------------------------------
+# A sweep wedged for 32 minutes on a single hung HTTPS read is what motivated
+# these. The SDK will wait forever by default, and Budget.max_seconds existed but
+# was never enforced, so one unlucky request stalls every remaining run.
+
+def test_the_http_client_is_given_a_finite_timeout():
+    """Without this the SDK blocks on a socket read indefinitely."""
+    from arena.drivers.gemini import http_options
+
+    options = http_options(timeout_seconds=90)
+
+    assert options.timeout == 90_000  # the SDK takes milliseconds
+
+
+class FakeClock:
+    def __init__(self, step=0.0):
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+def test_a_run_that_outlives_its_time_budget_is_stopped():
+    tools = RecordingTools()
+    client = FakeGemini([model_calls(["get", "pods"])] * 50)
+    # Each clock reading advances 30s, so a 60s budget expires almost at once.
+    driver = GeminiDriver(client=client, now=FakeClock(step=30.0))
+
+    transcript = driver.run(
+        task="fix it", tools=tools, budget=Budget(max_turns=99, max_seconds=60)
+    )
+
+    assert transcript.stop_reason == "timeout"
+    assert len(tools.calls) < 50
+
+
+def test_a_run_inside_its_time_budget_is_untouched():
+    client = FakeGemini([model_calls(["get", "pods"]), model_says("done")])
+    driver = GeminiDriver(client=client, now=FakeClock(step=0.1))
+
+    transcript = driver.run(
+        task="fix it", tools=RecordingTools(), budget=Budget(max_seconds=600)
+    )
+
+    assert transcript.stop_reason == "finished"

@@ -21,12 +21,15 @@ repeating runs and reporting the spread, not by pretending sampling is off.
 
 from __future__ import annotations
 
-import json
 import os
+import time
 
 from arena.drivers.base import Budget, ToolCall, ToolSurface, Transcript
 
 DEFAULT_MODEL = "gemini-3.6-flash"
+#: Per-request ceiling. The SDK waits forever by default, and a single hung read
+#: otherwise stalls every remaining run in a sweep.
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 120
 DEFAULT_THINKING_LEVEL = "low"
 
 SYSTEM_INSTRUCTION = """\
@@ -73,6 +76,13 @@ KUBECTL_TOOL = {
 }
 
 
+def http_options(timeout_seconds: int = DEFAULT_REQUEST_TIMEOUT_SECONDS):
+    """HTTP settings for the client. The SDK expects milliseconds."""
+    from google.genai import types
+
+    return types.HttpOptions(timeout=timeout_seconds * 1000)
+
+
 class GeminiDriver:
     """Drives a Gemini model through a scenario over a kubectl tool surface."""
 
@@ -82,9 +92,13 @@ class GeminiDriver:
         client=None,
         api_key: str | None = None,
         thinking_level: str = DEFAULT_THINKING_LEVEL,
+        timeout_seconds: int = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        now=time.monotonic,
     ):
         self.model = model
         self.thinking_level = thinking_level
+        self.timeout_seconds = timeout_seconds
+        self._now = now
         self.name = f"gemini:{model}"
 
         if client is not None:
@@ -112,7 +126,9 @@ class GeminiDriver:
 
         from google import genai
 
-        self._client = genai.Client(api_key=key)
+        self._client = genai.Client(
+            api_key=key, http_options=http_options(self.timeout_seconds)
+        )
 
     def _config(self):
         from google.genai import types
@@ -159,8 +175,17 @@ class GeminiDriver:
         input_tokens = output_tokens = 0
         stop_reason = "finished"
         summary = ""
+        deadline = self._now() + budget.max_seconds
 
         while True:
+            if self._now() >= deadline:
+                stop_reason = "timeout"
+                summary = (
+                    f"stopped after {len(calls)} tool call(s): exceeded the "
+                    f"{budget.max_seconds}s wall-clock budget"
+                )
+                break
+
             try:
                 response = self._client.models.generate_content(
                     model=self.model, contents=contents, config=self._config()
