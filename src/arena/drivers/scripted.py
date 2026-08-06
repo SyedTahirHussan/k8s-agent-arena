@@ -16,19 +16,27 @@ from arena.drivers.base import Budget, ToolCall, ToolSurface, Transcript
 class ScriptedDriver:
     """Issues its commands in order until they run out or the budget does."""
 
-    def __init__(self, commands: Sequence[Sequence[str]], name: str = "scripted"):
-        self.commands = [list(command) for command in commands]
+    def __init__(self, commands: Sequence, name: str = "scripted"):
+        # A step is either a bare argument list or a mapping carrying a manifest
+        # to pipe to stdin, which is how a fix that must *create* a resource is
+        # expressed.
+        self.commands = [
+            (list(step["args"]), step.get("manifest"))
+            if isinstance(step, dict)
+            else (list(step), None)
+            for step in commands
+        ]
         self.name = name
 
     def run(self, task: str, tools: ToolSurface, budget: Budget) -> Transcript:
         calls: list[ToolCall] = []
         stop_reason = "finished"
 
-        for command in self.commands:
+        for command, manifest in self.commands:
             if len(calls) >= budget.max_turns:
                 stop_reason = "budget_exhausted"
                 break
-            output, failed = tools.invoke(command)
+            output, failed = tools.invoke(command, stdin=manifest)
             calls.append(
                 ToolCall(name="kubectl", arguments=command, result=output, failed=failed)
             )

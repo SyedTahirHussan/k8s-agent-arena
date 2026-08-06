@@ -23,8 +23,8 @@ DEFAULT_MAX_SECONDS = 600
 class ToolSurface(Protocol):
     """The kubectl surface exposed to an agent."""
 
-    def invoke(self, args: list[str]) -> tuple[str, bool]:
-        """Run a kubectl command. Returns ``(output, failed)``."""
+    def invoke(self, args: list[str], stdin: str | None = None) -> tuple[str, bool]:
+        """Run a kubectl command, optionally piping ``stdin`` to it."""
         ...
 
 

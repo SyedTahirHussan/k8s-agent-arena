@@ -1,0 +1,24 @@
+# A single transposed character in the tag: `alpin` rather than `alpine`.
+# The failure surfaces as ImagePullBackOff, which names the symptom but not the
+# cause - the agent has to compare the running spec against the intended image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: nginx:1.29-alpin
+          ports:
+            - containerPort: 80

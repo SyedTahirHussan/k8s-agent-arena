@@ -36,6 +36,67 @@ def deployment(name, namespace="default", image="nginx:1.29", replicas=1, **fiel
     }
 
 
+def model_calls(*commands: list[str]):
+    """A Gemini response that asks to run one or more kubectl commands."""
+    from google.genai import types
+
+    return types.GenerateContentResponse.model_validate({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    {"function_call": {"name": "kubectl", "args": {"args": command}}}
+                    for command in commands
+                ],
+            }
+        }],
+        "usage_metadata": {
+            "prompt_token_count": 100,
+            "candidates_token_count": 20,
+            "thoughts_token_count": 30,
+            "total_token_count": 150,
+        },
+    })
+
+
+def model_says(text: str):
+    """A Gemini response that stops and reports, calling no tools."""
+    from google.genai import types
+
+    return types.GenerateContentResponse.model_validate({
+        "candidates": [{"content": {"role": "model", "parts": [{"text": text}]}}],
+        "usage_metadata": {
+            "prompt_token_count": 50,
+            "candidates_token_count": 10,
+            "thoughts_token_count": 5,
+            "total_token_count": 65,
+        },
+    })
+
+
+class FakeGemini:
+    """A stand-in for `genai.Client` that replays prepared responses.
+
+    Built from the SDK's real response types, so the driver exercises genuine
+    parsing rather than an invented shape. Raises whatever exception is queued,
+    which is how the API-failure paths get covered.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests: list[dict] = []
+        self.models = self
+
+    def generate_content(self, *, model, contents, config):
+        self.requests.append({"model": model, "contents": contents, "config": config})
+        if not self.responses:
+            return model_says("done")
+        nxt = self.responses.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+
 class RecordingTools:
     """A kubectl surface that records invocations instead of running them.
 
@@ -51,10 +112,12 @@ class RecordingTools:
         self.responses = responses or {}
         self.failures = failures or set()
         self.calls: list[list[str]] = []
+        self.stdins: list[str | None] = []
 
-    def invoke(self, args: list[str]) -> tuple[str, bool]:
+    def invoke(self, args: list[str], stdin: str | None = None) -> tuple[str, bool]:
         """Run a kubectl command. Returns (output, failed)."""
         self.calls.append(list(args))
+        self.stdins.append(stdin)
         key = " ".join(args)
         if key in self.failures:
             return (f"error: unknown command {key!r}", True)

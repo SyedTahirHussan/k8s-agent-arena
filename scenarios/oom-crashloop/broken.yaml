@@ -1,0 +1,35 @@
+# The container allocates ~120Mi and then idles. The 48Mi limit kills it during
+# allocation, so the pod crash-loops with reason OOMKilled - visible in
+# `kubectl describe pod` under lastState, but not in the pod's logs, which are
+# empty because the process never got far enough to print anything.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache
+  labels:
+    app: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cache
+  template:
+    metadata:
+      labels:
+        app: cache
+    spec:
+      containers:
+        - name: cache
+          image: python:3.13-alpine
+          command: ["python", "-c"]
+          args:
+            - |
+              import time
+              buffer = bytearray(120 * 1024 * 1024)
+              print("warm", flush=True)
+              time.sleep(3600)
+          resources:
+            limits:
+              memory: 48Mi
+            requests:
+              memory: 32Mi

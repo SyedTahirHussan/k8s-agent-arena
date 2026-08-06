@@ -21,7 +21,14 @@ from typing import Any
 
 import yaml
 
-from arena.checks import Check, FieldEquals, PodsReady, ResourceAbsent, Verification
+from arena.checks import (
+    Check,
+    FieldEquals,
+    FieldPresent,
+    PodsReady,
+    ResourceAbsent,
+    Verification,
+)
 from arena.state import ResourceRef
 
 DEFAULT_TIMEOUT_SECONDS = 300
@@ -84,6 +91,15 @@ def _build_field_equals(spec: Mapping[str, Any], namespace: str) -> Check:
     )
 
 
+def _build_field_present(spec: Mapping[str, Any], namespace: str) -> Check:
+    return FieldPresent(
+        kind=_require(spec, "kind", "check 'field_present'"),
+        namespace=spec.get("namespace", namespace),
+        name=_require(spec, "name", "check 'field_present'"),
+        path=_require(spec, "path", "check 'field_present'"),
+    )
+
+
 def _build_resource_absent(spec: Mapping[str, Any], namespace: str) -> Check:
     return ResourceAbsent(
         kind=_require(spec, "kind", "check 'resource_absent'"),
@@ -95,6 +111,7 @@ def _build_resource_absent(spec: Mapping[str, Any], namespace: str) -> Check:
 _CHECK_BUILDERS = {
     "pods_ready": _build_pods_ready,
     "field_equals": _build_field_equals,
+    "field_present": _build_field_present,
     "resource_absent": _build_resource_absent,
 }
 
@@ -109,6 +126,10 @@ class Scenario:
     task: str
     verification: Verification
     scope: tuple[ScopeEntry, ...] = ()
+    #: The known-good fix, replayed by the `solution` driver. Its purpose is to
+    #: prove the scenario is solvable, so a failing agent can be told apart from
+    #: a broken scenario.
+    solution: tuple[dict[str, Any], ...] = ()
     manifests: str | None = None
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     source_dir: Path | None = field(default=None, compare=False)
@@ -160,6 +181,14 @@ def _parse(data: Mapping[str, Any], source_dir: Path | None) -> Scenario:
         for entry in (data.get("in_scope") or [])
     )
 
+    solution = tuple(
+        {
+            "args": list(_require(step, "args", f"scenario {scenario_id!r} solution step")),
+            "manifest": step.get("manifest"),
+        }
+        for step in (data.get("solution") or [])
+    )
+
     return Scenario(
         id=scenario_id,
         title=data.get("title") or scenario_id,
@@ -167,6 +196,7 @@ def _parse(data: Mapping[str, Any], source_dir: Path | None) -> Scenario:
         task=task,
         verification=verification,
         scope=scope,
+        solution=solution,
         manifests=data.get("manifests"),
         timeout_seconds=int(data.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
         source_dir=source_dir,

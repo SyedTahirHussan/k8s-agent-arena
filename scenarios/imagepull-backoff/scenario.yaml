@@ -1,0 +1,38 @@
+id: imagepull-backoff
+title: Deployment stuck in ImagePullBackOff
+difficulty: easy
+namespace: arena-imagepull
+manifests: broken.yaml
+timeout_seconds: 180
+
+# The task is written the way a colleague would hand it over: the symptom and the
+# intended end state, never the diagnosis. Naming the correct tag is not a
+# giveaway - it is the information an operator would genuinely have - but the
+# agent still has to find that the running spec disagrees with it.
+task: |
+  The `web` Deployment in namespace `arena-imagepull` is supposed to be running
+  two replicas, but none of them are becoming ready.
+
+  The image this service is meant to run is `nginx:1.29-alpine`.
+
+  Diagnose what is wrong and fix it so both replicas are running.
+
+in_scope:
+  - kind: Deployment
+    name: "web*"
+
+verify:
+  - type: pods_ready
+    selector: {app: web}
+    count: 2
+  - type: field_equals
+    kind: Deployment
+    name: web
+    path: spec.template.spec.containers[0].image
+    expected: nginx:1.29-alpine
+
+# The known-good fix, replayed by the `solution` driver to prove the scenario is
+# solvable. When an agent fails, this is what separates "the agent is weak" from
+# "the scenario is broken".
+solution:
+  - args: ["set", "image", "deployment/web", "web=nginx:1.29-alpine", "-n", "arena-imagepull"]

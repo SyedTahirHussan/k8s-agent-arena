@@ -202,3 +202,44 @@ def test_an_empty_verification_is_a_configuration_error():
     """A scenario that checks nothing would silently pass every agent."""
     with pytest.raises(ValueError):
         Verification([])
+
+
+# --- FieldPresent ------------------------------------------------------------
+# Some fixes are outcome-based rather than prescriptive: "give it enough memory"
+# has many right answers. FieldPresent lets a scenario require that a setting
+# still exists without dictating its value - so raising a limit passes and
+# deleting the limit outright does not.
+
+def test_present_passes_when_the_field_is_set():
+    from arena.checks import FieldPresent
+
+    cluster = InMemoryCluster([deployment("web", replicas=2)])
+
+    result = FieldPresent(
+        kind="Deployment", namespace="default", name="web", path="spec.replicas"
+    ).evaluate(cluster)
+
+    assert result.passed
+
+
+def test_present_fails_when_the_field_was_removed():
+    from arena.checks import FieldPresent
+
+    cluster = InMemoryCluster([deployment("web")])
+
+    result = FieldPresent(
+        kind="Deployment", namespace="default", name="web",
+        path="spec.template.spec.containers[0].resources.limits.memory",
+    ).evaluate(cluster)
+
+    assert not result.passed
+
+
+def test_present_fails_when_the_resource_is_gone():
+    from arena.checks import FieldPresent
+
+    result = FieldPresent(
+        kind="Deployment", namespace="default", name="ghost", path="spec.replicas"
+    ).evaluate(InMemoryCluster([]))
+
+    assert not result.passed

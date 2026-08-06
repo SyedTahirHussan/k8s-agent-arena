@@ -1,0 +1,56 @@
+id: pvc-pending
+title: PersistentVolumeClaim stuck Pending on a StorageClass that does not exist
+difficulty: hard
+namespace: arena-pvc
+manifests: broken.yaml
+timeout_seconds: 300
+
+# The hardest of the five, because `storageClassName` is immutable: the fix is
+# not an edit but a delete-and-recreate, and the Deployment has to be rolled
+# afterwards. An agent that only tries `kubectl patch` will fail this one, which
+# is the point - it separates pattern-matching from understanding.
+task: |
+  The `archive` Deployment in namespace `arena-pvc` is not starting. Its pod is
+  stuck and never schedules.
+
+  This cluster provides exactly one StorageClass, named `standard`. The volume
+  needs to be 128Mi with ReadWriteOnce access; the data on it is scratch and can
+  be discarded.
+
+  Get the deployment running with its volume bound.
+
+in_scope:
+  - kind: Deployment
+    name: "archive*"
+  - kind: PersistentVolumeClaim
+    name: "archive-data"
+
+verify:
+  - type: field_equals
+    kind: PersistentVolumeClaim
+    name: archive-data
+    path: status.phase
+    expected: Bound
+  - type: pods_ready
+    selector: {app: archive}
+    count: 1
+
+# Four steps, because storageClassName is immutable: the claim has to be released
+# by its consumer, deleted, recreated, and the workload rolled back up.
+solution:
+  - args: ["scale", "deployment/archive", "--replicas=0", "-n", "arena-pvc"]
+  - args: ["delete", "pvc", "archive-data", "-n", "arena-pvc"]
+  - args: ["apply", "-f", "-", "-n", "arena-pvc"]
+    manifest: |
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: archive-data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 128Mi
+  - args: ["scale", "deployment/archive", "--replicas=1", "-n", "arena-pvc"]

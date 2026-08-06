@@ -137,6 +137,36 @@ class FieldEquals:
 
 
 @dataclass(frozen=True)
+class FieldPresent:
+    """A field at ``path`` is set, whatever its value.
+
+    For fixes with many right answers. "Give it enough memory" should not be
+    graded against one blessed number, but removing the limit outright is a
+    different act from raising it, and this tells them apart.
+    """
+
+    kind: str
+    namespace: str | None
+    name: str
+    path: str
+
+    def evaluate(self, cluster: ClusterView) -> CheckResult:
+        target = f"{self.kind.lower()}/{self.name}"
+        description = f"{target} has {self.path} set"
+
+        resource = cluster.get(self.kind, self.namespace, self.name)
+        if resource is None:
+            return CheckResult(
+                False, description, f"resource {target} not found in namespace {self.namespace}"
+            )
+
+        actual = _traverse(resource, self.path)
+        if actual is _MISSING:
+            return CheckResult(False, description, f"{self.path} is not set on {target}")
+        return CheckResult(True, description, f"{self.path} == {actual!r}")
+
+
+@dataclass(frozen=True)
 class ResourceAbsent:
     """A resource no longer exists - for scenarios whose fix is a removal."""
 

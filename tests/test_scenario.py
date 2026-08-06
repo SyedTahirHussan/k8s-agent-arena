@@ -150,3 +150,57 @@ def test_scope_can_be_restricted_by_kind():
     assert not scenario.in_scope(
         ResourceRef("v1", "Secret", "arena-imagepull", "web")
     )
+
+
+def test_field_present_is_available_to_scenarios():
+    text = FULL.replace(
+        """  - type: field_equals
+    kind: Deployment
+    name: web
+    path: spec.template.spec.containers[0].image
+    expected: nginx:1.29-alpine""",
+        """  - type: field_present
+    kind: Deployment
+    name: web
+    path: spec.template.spec.containers[0].resources.limits.memory""",
+    )
+
+    scenario = load_scenario_text(text)
+
+    assert len(scenario.verification.checks) == 2
+
+
+# --- reference solutions -----------------------------------------------------
+# A scenario carries the known-good fix so the suite can prove the scenario is
+# solvable at all. When an agent fails, this is what distinguishes "the agent is
+# weak" from "the scenario is broken".
+
+def test_a_scenario_can_carry_a_reference_solution():
+    text = FULL + """
+solution:
+  - args: ["set", "image", "deployment/web", "web=nginx:1.29-alpine"]
+"""
+
+    scenario = load_scenario_text(text)
+
+    assert scenario.solution == (
+        {"args": ["set", "image", "deployment/web", "web=nginx:1.29-alpine"], "manifest": None},
+    )
+
+
+def test_a_solution_step_can_carry_a_manifest_for_stdin():
+    text = FULL + """
+solution:
+  - args: ["apply", "-f", "-"]
+    manifest: |
+      apiVersion: v1
+      kind: ConfigMap
+"""
+
+    scenario = load_scenario_text(text)
+
+    assert "ConfigMap" in scenario.solution[0]["manifest"]
+
+
+def test_a_scenario_without_a_solution_is_still_valid():
+    assert load_scenario_text(FULL).solution == ()

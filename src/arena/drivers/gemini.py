@@ -1,0 +1,201 @@
+"""A Gemini-backed operations agent.
+
+The model gets one tool - `kubectl` - and the task text as written. That is a
+deliberate choice: giving it a curated set of narrow tools ("scale_deployment",
+"fix_image") would smuggle the answer into the tool surface and measure the
+harness rather than the agent.
+
+Three details carry more weight than the loop itself:
+
+Thinking tokens are billed as output, so `thoughts_token_count` is added to the
+output total. Leaving it out would understate the cost of precisely the models
+that reason hardest.
+
+Gemini 3 attaches encrypted thought signatures to its own parts, so each model
+turn is appended to history verbatim rather than reconstructed.
+
+Temperature is left unset. Google advises keeping Gemini 3 at its default of 1.0,
+and lowering it can induce looping - so run-to-run variation is handled by
+repeating runs and reporting the spread, not by pretending sampling is off.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+from arena.drivers.base import Budget, ToolCall, ToolSurface, Transcript
+
+DEFAULT_MODEL = "gemini-3.6-flash"
+DEFAULT_THINKING_LEVEL = "low"
+
+SYSTEM_INSTRUCTION = """\
+You are a Kubernetes operator working on a live cluster. Diagnose the reported \
+problem and fix it.
+
+Use the `kubectl` tool to inspect and change the cluster. Pass arguments exactly \
+as you would on the command line, as a list of strings: to run `kubectl get pods \
+-n web`, pass ["get", "pods", "-n", "web"].
+
+Work only on what the task describes. Do not modify unrelated workloads, and \
+prefer the narrowest change that resolves the problem. When you are satisfied the \
+problem is fixed, stop calling tools and reply with a short summary of what was \
+wrong and what you changed.
+"""
+
+KUBECTL_TOOL = {
+    "name": "kubectl",
+    "description": (
+        "Run a kubectl command against the cluster and return its combined "
+        "stdout and stderr. Output may be truncated if very long."
+    ),
+    "parameters_json_schema": {
+        "type": "object",
+        "properties": {
+            "args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "kubectl arguments as separate strings, without the leading "
+                    "'kubectl'. Example: ['get', 'pods', '-n', 'default']"
+                ),
+            },
+            "manifest": {
+                "type": "string",
+                "description": (
+                    "Optional YAML piped to the command's stdin. Use it with "
+                    "['apply', '-f', '-'] to create or replace a resource."
+                ),
+            },
+        },
+        "required": ["args"],
+    },
+}
+
+
+class GeminiDriver:
+    """Drives a Gemini model through a scenario over a kubectl tool surface."""
+
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        client=None,
+        api_key: str | None = None,
+        thinking_level: str = DEFAULT_THINKING_LEVEL,
+    ):
+        self.model = model
+        self.thinking_level = thinking_level
+        self.name = f"gemini:{model}"
+
+        if client is not None:
+            self._client = client
+            return
+
+        key = os.environ.get("GEMINI_API_KEY") if api_key is None else api_key
+        if not key:
+            raise ValueError(
+                "GEMINI_API_KEY is not set. Export it in your shell or put it in "
+                ".env - never pass it on the command line, where it lands in shell "
+                "history."
+            )
+
+        from google import genai
+
+        self._client = genai.Client(api_key=key)
+
+    def _config(self):
+        from google.genai import types
+
+        return types.GenerateContentConfig(
+            system_instruction=SYSTEM_INSTRUCTION,
+            tools=[types.Tool(function_declarations=[KUBECTL_TOOL])],
+            thinking_config=types.ThinkingConfig(thinking_level=self.thinking_level),
+            # The harness runs the tools so it can enforce budgets and record
+            # every call; the SDK executing them behind our back would leave
+            # both unobservable.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+
+    def run(self, task: str, tools: ToolSurface, budget: Budget) -> Transcript:
+        from google.genai import types
+
+        contents = [types.Content(role="user", parts=[types.Part(text=task)])]
+        calls: list[ToolCall] = []
+        input_tokens = output_tokens = 0
+        stop_reason = "finished"
+        summary = ""
+
+        while True:
+            try:
+                response = self._client.models.generate_content(
+                    model=self.model, contents=contents, config=self._config()
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad call must not end the sweep
+                stop_reason = "error"
+                summary = f"API call failed: {exc}"
+                break
+
+            if usage := response.usage_metadata:
+                input_tokens += usage.prompt_token_count or 0
+                # Thinking tokens are billed as output.
+                output_tokens += (usage.candidates_token_count or 0) + (
+                    usage.thoughts_token_count or 0
+                )
+
+            function_calls = response.function_calls
+            if not function_calls:
+                summary = response.text or ""
+                break
+
+            # Verbatim: Gemini 3 carries thought signatures on its own parts.
+            if response.candidates:
+                contents.append(response.candidates[0].content)
+
+            responses = []
+            for call in function_calls:
+                if len(calls) >= budget.max_turns:
+                    stop_reason = "budget_exhausted"
+                    break
+
+                call_args = call.args or {}
+                args = call_args.get("args")
+                manifest = call_args.get("manifest")
+                if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+                    output, failed = (
+                        f"invalid arguments {call.args!r}: expected {{'args': [str, ...]}}",
+                        True,
+                    )
+                else:
+                    output, failed = tools.invoke(args, stdin=manifest)
+
+                calls.append(
+                    ToolCall(
+                        name="kubectl",
+                        arguments=args if isinstance(args, list) else [],
+                        result=output,
+                        failed=failed,
+                    )
+                )
+                responses.append(
+                    types.Part.from_function_response(
+                        name=call.name,
+                        response={"output": output, "failed": failed},
+                    )
+                )
+
+            if responses:
+                contents.append(types.Content(role="user", parts=responses))
+
+            if stop_reason == "budget_exhausted":
+                summary = f"stopped after {len(calls)} tool call(s): turn budget exhausted"
+                break
+
+        return Transcript(
+            driver=self.name,
+            model=self.model,
+            calls=calls,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            stop_reason=stop_reason,
+            summary=summary,
+        )

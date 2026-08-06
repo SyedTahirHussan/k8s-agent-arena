@@ -91,7 +91,7 @@ class KubectlSurface:
     timeout_seconds: int = 60
     output_limit: int = DEFAULT_OUTPUT_LIMIT
 
-    def invoke(self, args: list[str]) -> tuple[str, bool]:
+    def invoke(self, args: list[str], stdin: str | None = None) -> tuple[str, bool]:
         """Run one command. Returns ``(output, failed)``; never raises on failure.
 
         An agent issuing invalid kubectl is data about the agent, not an error
@@ -105,6 +105,7 @@ class KubectlSurface:
         try:
             completed = subprocess.run(
                 argv,
+                input=stdin,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,

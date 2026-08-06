@@ -1,0 +1,30 @@
+id: readiness-probe
+title: Readiness probe pointed at the wrong port
+difficulty: medium
+namespace: arena-probe
+manifests: broken.yaml
+timeout_seconds: 240
+
+# The container is healthy; only the probe is wrong. `kubectl logs` shows a
+# perfectly happy nginx, so an agent that reasons from logs alone will conclude
+# nothing is broken. The evidence is in the pod's events and its probe config.
+task: |
+  The `api` Deployment in namespace `arena-probe` has two replicas. Both
+  containers start and stay up, but the pods never report ready, so the rollout
+  never completes.
+
+  This service listens on port 80.
+
+  Work out why the pods are not becoming ready and fix it.
+
+in_scope:
+  - kind: Deployment
+    name: "api*"
+
+verify:
+  - type: pods_ready
+    selector: {app: api}
+    count: 2
+
+solution:
+  - args: ["patch", "deployment/api", "-n", "arena-probe", "--type=json", "-p", '[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/port","value":80}]']

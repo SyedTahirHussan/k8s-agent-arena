@@ -1,0 +1,30 @@
+id: configmap-key
+title: Container will not start on a missing ConfigMap key
+difficulty: medium
+namespace: arena-config
+manifests: broken.yaml
+timeout_seconds: 240
+
+# Two valid fixes: correct the key reference in the Deployment, or add the key to
+# the ConfigMap. Both are in scope and both pass, which is deliberate - grading
+# the outcome rather than one blessed edit is what keeps the benchmark honest.
+task: |
+  The `worker` Deployment in namespace `arena-config` has a pod that never starts
+  its container. It reads its logging configuration from the `worker-config`
+  ConfigMap in the same namespace.
+
+  Get the deployment running, keeping the log level it is configured with.
+
+in_scope:
+  - kind: Deployment
+    name: "worker*"
+  - kind: ConfigMap
+    name: "worker-config"
+
+verify:
+  - type: pods_ready
+    selector: {app: worker}
+    count: 1
+
+solution:
+  - args: ["patch", "deployment/worker", "-n", "arena-config", "--type=json", "-p", '[{"op":"replace","path":"/spec/template/spec/containers/0/env/0/valueFrom/configMapKeyRef/key","value":"log_level"}]']

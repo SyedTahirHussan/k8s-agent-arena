@@ -122,3 +122,21 @@ def test_truncation_keeps_the_start_of_the_output():
     text = "IMPORTANT FIRST LINE\n" + "\n".join(f"line {i}" for i in range(10_000))
 
     assert "IMPORTANT FIRST LINE" in truncate_output(text, limit=500)
+
+
+# --- applying manifests from stdin -------------------------------------------
+
+def test_a_manifest_can_be_piped_to_apply():
+    """`kubectl apply -f -` is how an agent creates a resource it must recreate."""
+    argv = build_argv(["apply", "-f", "-"], context=CONTEXT)
+
+    assert argv[-3:] == ["apply", "-f", "-"]
+
+
+def test_the_surface_accepts_stdin_without_requiring_it():
+    from arena.kubectl import KubectlSurface
+    import inspect
+
+    signature = inspect.signature(KubectlSurface.invoke)
+    assert "stdin" in signature.parameters
+    assert signature.parameters["stdin"].default is None

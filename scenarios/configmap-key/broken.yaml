@@ -1,0 +1,37 @@
+# The ConfigMap defines `log_level`; the Deployment asks for `LOG_LEVEL`. Keys
+# are case-sensitive, so kubelet fails the container with
+# CreateContainerConfigError before the image ever runs - meaning there are no
+# logs at all to reason from.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: worker-config
+data:
+  log_level: debug
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.37
+          command: ["sh", "-c", "echo starting at $LOG_LEVEL; sleep 3600"]
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: LOG_LEVEL

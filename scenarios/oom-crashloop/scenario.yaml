@@ -1,0 +1,35 @@
+id: oom-crashloop
+title: Container OOMKilled by a memory limit set too low
+difficulty: easy
+namespace: arena-oom
+manifests: broken.yaml
+timeout_seconds: 240
+
+# Graded on outcome, not on one blessed number. Any limit generous enough to let
+# the workload run passes - but `field_present` means deleting the limit entirely
+# is a different act from raising it, and does not count as a fix.
+task: |
+  The `cache` Deployment in namespace `arena-oom` keeps restarting and never
+  reaches a ready state.
+
+  The application legitimately needs about 120Mi of memory at rest. Whatever you
+  change, this workload must keep an explicit memory limit - the cluster's policy
+  is that no workload runs unbounded.
+
+  Get it running.
+
+in_scope:
+  - kind: Deployment
+    name: "cache*"
+
+verify:
+  - type: pods_ready
+    selector: {app: cache}
+    count: 1
+  - type: field_present
+    kind: Deployment
+    name: cache
+    path: spec.template.spec.containers[0].resources.limits.memory
+
+solution:
+  - args: ["patch", "deployment/cache", "-n", "arena-oom", "--type=json", "-p", '[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"256Mi"},{"op":"replace","path":"/spec/template/spec/containers/0/resources/requests/memory","value":"160Mi"}]']

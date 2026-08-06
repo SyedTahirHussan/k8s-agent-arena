@@ -1,0 +1,43 @@
+# `fast-ssd` does not exist on this cluster, so the claim never binds and the pod
+# stays Pending with a FailedScheduling event. `storageClassName` is immutable
+# once set, so patching the PVC in place returns an error and the agent has to
+# delete and recreate it - then roll the Deployment to clear the stuck pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: archive-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 128Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: archive
+  labels:
+    app: archive
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: archive
+  template:
+    metadata:
+      labels:
+        app: archive
+    spec:
+      containers:
+        - name: archive
+          image: busybox:1.37
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: archive-data
