@@ -1,0 +1,41 @@
+[project]
+name = "k8s-agent-arena"
+version = "0.1.0"
+description = "A reproducible benchmark for LLM agents operating Kubernetes clusters"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "Syed Tahir Hussan", email = "tahirsherazi786@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+gemini = [
+    "google-genai>=1.0.0",
+]
+
+[project.scripts]
+arena = "arena.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "arena"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "cluster: requires a live kind cluster (deselect with '-m \"not cluster\"')",
+    "live_api: requires GEMINI_API_KEY and spends money (deselect with '-m \"not live_api\"')",
+]

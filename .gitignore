@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets - never commit API keys
+.env
+.env.*
+!.env.example
+*.key
+
+# Kubeconfigs pulled from throwaway clusters
+kubeconfig
+*.kubeconfig
+
+# Run artifacts
+results/
+.pytest_cache/
