@@ -82,6 +82,16 @@ KUBECTL_TOOL = {
 }
 
 
+def is_daily_quota(exc: Exception) -> bool:
+    """Is this the daily cap rather than per-minute throttling?
+
+    The two are worth telling apart. Per-minute throttling clears in seconds; the
+    daily cap resets at midnight Pacific, so retrying it burns minutes per run to
+    arrive at the same failure.
+    """
+    return "PerDay" in str(exc)
+
+
 def is_rate_limited(exc: Exception) -> bool:
     """Is this throttling, as opposed to a request that will fail identically again?"""
     if getattr(exc, "code", None) == 429:
@@ -221,6 +231,15 @@ class GeminiDriver:
                     )
                     break
                 except Exception as exc:  # noqa: BLE001 - must not end the sweep
+                    if is_daily_quota(exc):
+                        stop_reason = "error"
+                        summary = (
+                            "daily API quota exhausted - this resets at midnight "
+                            "Pacific and cannot be waited out. A full sweep needs "
+                            "roughly 106 requests; the free tier allows 20 per day. "
+                            f"Enable billing to continue. Original error: {exc}"
+                        )
+                        break
                     if is_rate_limited(exc) and attempt < MAX_RATE_LIMIT_RETRIES:
                         # `contents` is untouched, so the retry resumes the same
                         # conversation rather than restarting the task.

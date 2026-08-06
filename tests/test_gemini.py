@@ -376,3 +376,52 @@ def test_retrying_does_not_lose_the_conversation():
     assert len(transcript.calls) == 1
     # The retried request carries the tool result from before the throttle.
     assert "get" in str(client.requests[-1]["contents"])
+
+
+# --- daily quota is not worth waiting out ------------------------------------
+# Two free-tier limits exist. Per-minute throttling clears in seconds and is
+# worth sleeping through; the daily cap resets at midnight Pacific, so retrying
+# it just burns three minutes per run to arrive at the same failure.
+
+DAILY_EXHAUSTED = Boom(
+    "429 RESOURCE_EXHAUSTED. quotaId: "
+    "'GenerateRequestsPerDayPerProjectPerModel-FreeTier', quotaValue: '20'. "
+    "Please retry in 35.175008393s.",
+    code=429,
+)
+
+
+def test_a_daily_quota_is_not_retried():
+    naps = Naps()
+    client = FakeGemini([DAILY_EXHAUSTED] * 10)
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "error"
+    assert naps.slept == [], "a daily cap resets at midnight; waiting is pointless"
+
+
+def test_the_daily_quota_message_says_what_to_do():
+    naps = Naps()
+    client = FakeGemini([DAILY_EXHAUSTED])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert "daily" in transcript.summary.lower()
+
+
+def test_per_minute_throttling_is_still_waited_out():
+    """The distinction has to be precise or the useful retry is lost too."""
+    naps = Naps()
+    client = FakeGemini([RATE_LIMITED, model_says("done")])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "finished"
+    assert naps.slept
