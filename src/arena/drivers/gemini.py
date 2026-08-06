@@ -22,6 +22,7 @@ repeating runs and reporting the spread, not by pretending sampling is off.
 from __future__ import annotations
 
 import os
+import re
 import time
 
 from arena.drivers.base import Budget, ToolCall, ToolSurface, Transcript
@@ -31,6 +32,11 @@ DEFAULT_MODEL = "gemini-3.6-flash"
 #: otherwise stalls every remaining run in a sweep.
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 120
 DEFAULT_THINKING_LEVEL = "low"
+#: The free tier allows five requests per minute and one agent run needs six to
+#: eight, so being throttled mid-run is the normal case, not an edge case.
+MAX_RATE_LIMIT_RETRIES = 5
+#: Used when the API throttles without saying for how long.
+FALLBACK_BACKOFF_SECONDS = 30.0
 
 SYSTEM_INSTRUCTION = """\
 You are a Kubernetes operator working on a live cluster. Diagnose the reported \
@@ -76,6 +82,25 @@ KUBECTL_TOOL = {
 }
 
 
+def is_rate_limited(exc: Exception) -> bool:
+    """Is this throttling, as opposed to a request that will fail identically again?"""
+    if getattr(exc, "code", None) == 429:
+        return True
+    text = str(exc)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
+
+
+def retry_after(exc: Exception, attempt: int) -> float:
+    """How long to wait. The API usually says; otherwise back off exponentially.
+
+    A small margin is added to the API's own figure - retrying the instant the
+    window opens tends to land just inside it and be refused again.
+    """
+    if match := re.search(r"retry in ([0-9.]+)s", str(exc)):
+        return float(match.group(1)) + 1.0
+    return FALLBACK_BACKOFF_SECONDS * (2 ** attempt)
+
+
 def http_options(timeout_seconds: int = DEFAULT_REQUEST_TIMEOUT_SECONDS):
     """HTTP settings for the client. The SDK expects milliseconds."""
     from google.genai import types
@@ -94,11 +119,13 @@ class GeminiDriver:
         thinking_level: str = DEFAULT_THINKING_LEVEL,
         timeout_seconds: int = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         now=time.monotonic,
+        sleep=time.sleep,
     ):
         self.model = model
         self.thinking_level = thinking_level
         self.timeout_seconds = timeout_seconds
         self._now = now
+        self._sleep = sleep
         self.name = f"gemini:{model}"
 
         if client is not None:
@@ -186,13 +213,24 @@ class GeminiDriver:
                 )
                 break
 
-            try:
-                response = self._client.models.generate_content(
-                    model=self.model, contents=contents, config=self._config()
-                )
-            except Exception as exc:  # noqa: BLE001 - one bad call must not end the sweep
-                stop_reason = "error"
-                summary = f"API call failed: {exc}"
+            response = None
+            for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+                try:
+                    response = self._client.models.generate_content(
+                        model=self.model, contents=contents, config=self._config()
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 - must not end the sweep
+                    if is_rate_limited(exc) and attempt < MAX_RATE_LIMIT_RETRIES:
+                        # `contents` is untouched, so the retry resumes the same
+                        # conversation rather than restarting the task.
+                        self._sleep(retry_after(exc, attempt))
+                        continue
+                    stop_reason = "error"
+                    summary = f"API call failed: {exc}"
+                    break
+
+            if response is None:
                 break
 
             if usage := response.usage_metadata:

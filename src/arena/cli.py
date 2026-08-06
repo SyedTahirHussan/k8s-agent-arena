@@ -81,7 +81,15 @@ def _print_result(result: RunResult) -> None:
     )
     if result.error:
         print(f"         harness error: {result.error}", flush=True)
-    elif not result.passed:
+    # A run that did not simply finish needs its reason surfaced: an API failure
+    # is not evidence about the model, and burying it in the JSON made a quota
+    # error look identical to an agent that refused to act.
+    elif result.stop_reason not in ("finished", ""):
+        detail = result.summary.strip().splitlines()
+        print(f"         stopped: {result.stop_reason}", flush=True)
+        if detail:
+            print(f"         {detail[0][:220]}", flush=True)
+    if not result.passed and not result.error:
         for line in result.verification.splitlines():
             print(f"         {line}", flush=True)
     if result.collateral:
@@ -130,7 +138,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"no such scenario(s): {', '.join(sorted(missing))}", file=sys.stderr)
             return 1
 
-    budget = Budget(max_turns=args.max_turns)
+    budget = Budget(max_turns=args.max_turns, max_seconds=args.max_seconds)
     results: list[RunResult] = []
 
     # Prove the credentials work before provisioning anything. API failures are
@@ -192,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
                      choices=["minimal", "low", "medium", "high"],
                      help="Gemini thinking level")
     run.add_argument("--max-turns", type=int, default=25, help="tool-call budget per run")
+    run.add_argument("--max-seconds", type=int, default=1200,
+                     help="wall-clock budget per run; waiting out rate limits counts "
+                          "towards it, so free-tier keys need headroom")
     run.add_argument("--keep", action="store_true",
                      help="leave clusters running for post-mortem (you must delete them)")
     run.add_argument("--out", help="where to write raw JSON results")

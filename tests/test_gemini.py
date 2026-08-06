@@ -284,3 +284,95 @@ def test_a_run_inside_its_time_budget_is_untouched():
     )
 
     assert transcript.stop_reason == "finished"
+
+
+# --- rate limits -------------------------------------------------------------
+# The free tier allows five requests per minute and a single agent run makes six
+# to eight, so without backoff a run dies partway through with zero tool calls -
+# indistinguishable in the results table from a model that refused to act.
+# The API states how long to wait; the only real mistake is not listening.
+
+class Boom(Exception):
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+RATE_LIMITED = Boom(
+    "429 RESOURCE_EXHAUSTED. Quota exceeded for "
+    "GenerateRequestsPerMinutePerProjectPerModel-FreeTier. "
+    "Please retry in 33.205897508s.",
+    code=429,
+)
+
+
+class Naps:
+    def __init__(self):
+        self.slept = []
+
+    def __call__(self, seconds):
+        self.slept.append(seconds)
+
+
+def test_a_rate_limited_request_is_retried_rather_than_failing_the_run():
+    naps = Naps()
+    client = FakeGemini([RATE_LIMITED, model_says("done")])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "finished"
+    assert naps.slept, "it should have waited before retrying"
+
+
+def test_it_waits_as_long_as_the_api_asked():
+    naps = Naps()
+    client = FakeGemini([RATE_LIMITED, model_says("done")])
+
+    GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    # 33.2s requested; a small margin on top is fine, undershooting is not.
+    assert naps.slept[0] >= 33.2
+
+
+def test_it_gives_up_after_repeated_rate_limits():
+    naps = Naps()
+    client = FakeGemini([RATE_LIMITED] * 20)
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "error"
+    assert len(naps.slept) <= 6, "it must not retry forever"
+
+
+def test_an_ordinary_error_is_not_retried():
+    """Only throttling is worth waiting out; a 400 will fail again identically."""
+    naps = Naps()
+    client = FakeGemini([Boom("400 INVALID_ARGUMENT", code=400), model_says("done")])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "error"
+    assert naps.slept == []
+
+
+def test_retrying_does_not_lose_the_conversation():
+    """A retry must resend the same history, not restart the task."""
+    naps = Naps()
+    client = FakeGemini([model_calls(["get", "pods"]), RATE_LIMITED, model_says("done")])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "finished"
+    assert len(transcript.calls) == 1
+    # The retried request carries the tool result from before the throttle.
+    assert "get" in str(client.requests[-1]["contents"])
