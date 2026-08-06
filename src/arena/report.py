@@ -40,6 +40,30 @@ class Row:
         return f"{self.passes}/{self.runs}"
 
 
+#: Stop reasons that mean the harness or the API gave out, not that the agent
+#: failed the task. `budget_exhausted` is deliberately absent - running out of
+#: turns is the agent failing to converge, which is a genuine result.
+_INCIDENT_REASONS = {"timeout", "error", "harness_error"}
+
+
+def _incidents(runs: list[RunResult]) -> str:
+    """Note runs that ended for reasons that say nothing about the agent.
+
+    Counting an API timeout as a plain failure would quietly understate a model,
+    so these are surfaced next to the pass rate rather than folded into it.
+    """
+    reasons: dict[str, int] = {}
+    for run in runs:
+        if run.stop_reason in _INCIDENT_REASONS or run.error:
+            key = run.stop_reason or "error"
+            reasons[key] = reasons.get(key, 0) + 1
+
+    if not reasons:
+        return ""
+    parts = [f"{count} run(s) {reason}" for reason, count in sorted(reasons.items())]
+    return "; ".join(parts)
+
+
 def aggregate(results: list[RunResult]) -> list[Row]:
     """Group runs by scenario and driver, preserving how often each passed."""
     groups: OrderedDict[tuple[str, str], list[RunResult]] = OrderedDict()
@@ -49,7 +73,7 @@ def aggregate(results: list[RunResult]) -> list[Row]:
     rows = []
     for (scenario, driver), runs in groups.items():
         count = len(runs)
-        errors = [r.error for r in runs if r.error]
+        incidents = _incidents(runs)
         rows.append(
             Row(
                 scenario=scenario,
@@ -62,7 +86,7 @@ def aggregate(results: list[RunResult]) -> list[Row]:
                 mean_calls=round(sum(r.tool_calls for r in runs) / count, 1),
                 total_tokens=sum(r.total_tokens for r in runs),
                 mean_seconds=round(sum(r.duration_seconds for r in runs) / count, 1),
-                notes=f"{len(errors)} harness error(s)" if errors else "",
+                notes=incidents,
             )
         )
     return rows

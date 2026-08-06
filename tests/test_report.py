@@ -99,3 +99,44 @@ def test_the_table_shows_the_pass_rate_and_the_blast_radius():
 
 def test_the_table_survives_having_no_results():
     assert isinstance(to_markdown([]), str)
+
+
+# --- distinguishing model failure from harness failure ------------------------
+# A run killed by an API timeout is not evidence about the model. Counting it as
+# a plain failure would quietly understate an agent, and the hung-request
+# incident showed exactly how easily that happens.
+
+def infra_result(stop_reason, **kw):
+    # Same scenario and driver as `result()`, so these group into one row.
+    return RunResult(
+        scenario="imagepull-backoff", title="t", driver="gemini:gemini-3.6-flash",
+        model="gemini-3.6-flash", passed=False, checks_passed=0, checks_total=2,
+        verification="", blast_score=0, blast_summary="",
+        stop_reason=stop_reason, **kw,
+    )
+
+
+def test_a_timed_out_run_is_flagged_rather_than_read_as_a_model_failure():
+    rows = aggregate([result(passed=True), infra_result("timeout")])
+
+    assert rows[0].pass_rate == "1/2"
+    assert "1 run" in rows[0].notes and "timeout" in rows[0].notes
+
+
+def test_an_api_error_is_flagged_too():
+    rows = aggregate([infra_result("error")])
+
+    assert "error" in rows[0].notes
+
+
+def test_clean_runs_carry_no_note():
+    rows = aggregate([result(passed=True), result(passed=False)])
+
+    assert rows[0].notes == ""
+
+
+def test_a_budget_exhausted_run_is_a_genuine_model_failure_not_an_incident():
+    """Running out of turns is the agent failing to converge. That is a result."""
+    rows = aggregate([infra_result("budget_exhausted")])
+
+    assert rows[0].notes == ""
