@@ -16,6 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from arena.cluster import delete_cluster, list_clusters, orphaned_clusters
 from arena.drivers.base import Budget
 from arena.drivers.noop import NoopDriver
 from arena.drivers.scripted import ScriptedDriver
@@ -99,6 +100,20 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clean(args: argparse.Namespace) -> int:
+    """Delete clusters an interrupted run left behind."""
+    orphans = orphaned_clusters(list_clusters())
+    if not orphans:
+        print("no leftover arena clusters")
+        return 0
+
+    for name in orphans:
+        print(f"deleting {name} ...", flush=True)
+        delete_cluster(name)
+    print(f"removed {len(orphans)} cluster(s)")
+    return 0
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     scenarios = discover()
     if args.scenario:
@@ -116,9 +131,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     # recorded as failed runs rather than raised, so without this a bad key
     # produces a complete sweep in which every row looks like a model failure.
     probe = _make_driver(args.driver, scenarios[0], args.model, args.thinking)
-    if (check := getattr(probe, "preflight", None)) and (problem := check()):
-        print(f"preflight failed, not starting the sweep:\n  {problem}", file=sys.stderr)
-        return 1
+    if check := getattr(probe, "preflight", None):
+        if problem := check():
+            print(f"preflight failed, not starting the sweep:\n  {problem}", file=sys.stderr)
+            return 1
+        print(f"credentials ok for {args.model}")
 
     print(f"driver={args.driver} repeats={args.repeats} scenarios={len(scenarios)}\n")
     for scenario in scenarios:
@@ -151,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("validate", help="check every scenario parses").set_defaults(
         func=cmd_validate
     )
+    sub.add_parser(
+        "clean", help="delete arena clusters left behind by an interrupted run"
+    ).set_defaults(func=cmd_clean)
 
     run = sub.add_parser("run", help="run scenarios against a driver")
     run.add_argument(
@@ -172,7 +192,15 @@ def main(argv: list[str] | None = None) -> int:
     run.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print(
+            "\ninterrupted. If a cluster was mid-creation, `arena clean` removes "
+            "anything left behind.",
+            file=sys.stderr,
+        )
+        return 130
 
 
 if __name__ == "__main__":

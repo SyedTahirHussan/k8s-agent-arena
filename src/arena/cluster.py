@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from arena.guard import arena_cluster_name, ensure_safe_context
+from arena.guard import ARENA_PREFIX, arena_cluster_name, ensure_safe_context
 from arena.kubectl import build_argv
 from arena.state import Snapshot
 
@@ -51,6 +51,27 @@ def _run(argv: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
         raise ClusterError(f"{' '.join(argv[:2])} timed out after {timeout}s") from exc
 
 
+def list_clusters() -> list[str]:
+    """Every kind cluster on this machine, arena-owned or not."""
+    result = _run(["kind", "get", "clusters"], timeout=60)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def orphaned_clusters(clusters: list[str]) -> list[str]:
+    """Filter to clusters the arena created and is therefore allowed to delete.
+
+    Deliberately strict. A developer's own kind clusters must be untouchable, so
+    only the `arena-<random>` names the arena mints are ever candidates.
+    """
+    return [
+        name
+        for name in clusters
+        if name.startswith(ARENA_PREFIX) and len(name) > len(ARENA_PREFIX)
+    ]
+
+
 def create_cluster(name: str | None = None) -> ClusterHandle:
     """Create a kind cluster the arena owns."""
     name = name or arena_cluster_name()
@@ -60,10 +81,17 @@ def create_cluster(name: str | None = None) -> ClusterHandle:
     # to touch afterwards.
     ensure_safe_context(context, name)
 
-    result = _run(
-        ["kind", "create", "cluster", "--name", name, "--wait", "90s"],
-        timeout=CREATE_TIMEOUT_SECONDS,
-    )
+    try:
+        result = _run(
+            ["kind", "create", "cluster", "--name", name, "--wait", "90s"],
+            timeout=CREATE_TIMEOUT_SECONDS,
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C here lands before any context manager is armed, so without this
+        # the half-built cluster outlives the process that made it.
+        delete_cluster(name)
+        raise
+
     if result.returncode != 0:
         raise ClusterError(f"kind create cluster failed:\n{result.stderr.strip()}")
 
@@ -89,6 +117,8 @@ def arena_cluster(keep: bool = False) -> Iterator[ClusterHandle]:
         yield handle
     finally:
         if not keep:
+            # `finally` rather than `except Exception`, so a Ctrl-C mid-run still
+            # tears the cluster down instead of leaving it holding a container.
             delete_cluster(handle.name)
 
 
