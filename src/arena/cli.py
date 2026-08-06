@@ -112,6 +112,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     budget = Budget(max_turns=args.max_turns)
     results: list[RunResult] = []
 
+    # Prove the credentials work before provisioning anything. API failures are
+    # recorded as failed runs rather than raised, so without this a bad key
+    # produces a complete sweep in which every row looks like a model failure.
+    probe = _make_driver(args.driver, scenarios[0], args.model, args.thinking)
+    if (check := getattr(probe, "preflight", None)) and (problem := check()):
+        print(f"preflight failed, not starting the sweep:\n  {problem}", file=sys.stderr)
+        return 1
+
     print(f"driver={args.driver} repeats={args.repeats} scenarios={len(scenarios)}\n")
     for scenario in scenarios:
         print(f"{scenario.id}: {scenario.title}", flush=True)

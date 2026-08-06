@@ -205,3 +205,33 @@ def test_omitting_a_manifest_sends_no_stdin():
     GeminiDriver(client=client).run(task="fix it", tools=tools, budget=Budget())
 
     assert tools.stdins == [None]
+
+
+# --- preflight ---------------------------------------------------------------
+# A bad key is only discovered on the first API call, which happens *after* the
+# first cluster is provisioned. Across a sweep that is an hour of wall clock to
+# learn the credentials were wrong. One cheap call up front turns that into
+# three seconds.
+
+def test_preflight_passes_when_the_api_answers():
+    driver = GeminiDriver(client=FakeGemini([model_says("ok")]))
+
+    assert driver.preflight() is None
+
+
+def test_preflight_returns_the_reason_when_the_api_rejects_the_key():
+    driver = GeminiDriver(client=FakeGemini([
+        RuntimeError("401 API key not valid. Please pass a valid API key.")
+    ]))
+
+    problem = driver.preflight()
+
+    assert problem is not None
+    assert "401" in problem
+
+
+def test_preflight_flags_a_key_wrapped_in_smart_quotes():
+    """Copying a key out of a document is how this happens, and the shell keeps
+    the curly quotes as literal characters."""
+    with pytest.raises(ValueError, match="quote"):
+        GeminiDriver(api_key="“AIzaSyExampleExampleExampleExampleExa”")

@@ -99,6 +99,17 @@ class GeminiDriver:
                 "history."
             )
 
+        # Copying a key out of a document or web page brings curly quotes with
+        # it, and the shell keeps them as literal characters. The resulting 401
+        # is otherwise only discovered after the first cluster is provisioned.
+        if any(ch in key for ch in "“”‘’\"'"):
+            raise ValueError(
+                "GEMINI_API_KEY contains a quote character. This usually means it "
+                "was exported with curly quotes copied from a document, e.g. "
+                'export GEMINI_API_KEY=“AIza...”, which the shell keeps literally. '
+                "Re-export it with straight quotes or none at all."
+            )
+
         from google import genai
 
         self._client = genai.Client(api_key=key)
@@ -115,6 +126,30 @@ class GeminiDriver:
             # both unobservable.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
+
+    def preflight(self) -> str | None:
+        """Make one cheap call to prove the credentials work. Returns the problem, or None.
+
+        Without this, a bad key is only discovered on the first API call - which
+        happens after the first cluster has been provisioned. Across a sweep that
+        is an hour of wall clock spent learning the key was wrong, and because
+        API failures are recorded as failed runs rather than raised, the sweep
+        completes and every row reads as a model failure.
+        """
+        from google.genai import types
+
+        try:
+            self._client.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=[types.Part(text="ok")])],
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+                    max_output_tokens=16,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - any failure here is disqualifying
+            return str(exc)
+        return None
 
     def run(self, task: str, tools: ToolSurface, budget: Budget) -> Transcript:
         from google.genai import types
