@@ -1,10 +1,45 @@
+<div align="center">
+
 # k8s-agent-arena
 
-A reproducible benchmark for LLM agents that operate Kubernetes clusters.
+**A reproducible benchmark for LLM agents that operate Kubernetes clusters.**
+
+*It grades the cluster, not the agent's self-report — and scores what the agent*
+*broke on the way to fixing things.*
+
+[![tests](https://github.com/SyedTahirHussan/k8s-agent-arena/actions/workflows/tests.yml/badge.svg)](https://github.com/SyedTahirHussan/k8s-agent-arena/actions/workflows/tests.yml)
+[![licence](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.13-3776AB)](pyproject.toml)
+[![kubernetes](https://img.shields.io/badge/kubernetes-v1.36-326CE5)](https://kind.sigs.k8s.io/)
+
+</div>
+
+---
 
 Each scenario provisions a throwaway [kind](https://kind.sigs.k8s.io/) cluster,
 breaks it in a specific way, hands an agent a task written the way a colleague
 would hand it over, and then grades what actually happened to the cluster.
+
+```mermaid
+flowchart LR
+    A["provision<br/><small>fresh kind cluster</small>"] --> B["break<br/><small>apply the fault</small>"]
+    B --> C(["snapshot ①"])
+    C --> D["hand over<br/><small>agent + kubectl</small>"]
+    D --> E["grade<br/><small>poll until converged</small>"]
+    E --> F(["snapshot ②"])
+    F --> G["destroy"]
+
+    C -.->|"diff ① → ② =<br/>blast radius"| F
+
+    style C fill:#0f5c7a,stroke:#0f5c7a,color:#fff
+    style F fill:#0f5c7a,stroke:#0f5c7a,color:#fff
+    style D fill:#8a6212,stroke:#8a6212,color:#fff
+    style E fill:#2e6f4e,stroke:#2e6f4e,color:#fff
+```
+
+The baseline snapshot is taken *after* the fault has settled, so the churn
+Kubernetes generates while creating the broken state is never billed to the
+agent.
 
 ## Why another benchmark
 
@@ -13,14 +48,17 @@ right thing. This one measures the cluster.
 
 Two things follow from that, and they are the whole point of the project:
 
-**Grading reads live cluster state, never the agent's own account.** A model that
-reports success is making a claim, not providing evidence. Checks poll the API
-server until the cluster converges or the scenario times out.
+> [!IMPORTANT]
+> **Grading reads live cluster state, never the agent's own account.** A model
+> that reports success is making a claim, not providing evidence. Checks poll the
+> API server until the cluster converges or the scenario times out.
 
-**Task success is scored alongside blast radius.** Success alone rewards the
-wrong behaviour: an agent that deletes the namespace and recreates it "resolves"
-most incidents. So every run also records what the agent disturbed that nobody
-asked it to touch — weighted, with deletions counting for more than edits.
+> [!IMPORTANT]
+> **Task success is scored alongside blast radius.** Success alone rewards the
+> wrong behaviour: an agent that deletes the namespace and recreates it
+> "resolves" most incidents. So every run also records what the agent disturbed
+> that nobody asked it to touch — weighted, with deletions counting for more
+> than edits.
 
 Blast radius is a *measurement*, not a guardrail. Destructive kubectl verbs are
 deliberately permitted, because an agent has to be able to break things for the
@@ -32,7 +70,7 @@ Requires Docker, `kubectl`, [`kind`](https://kind.sigs.k8s.io/), and
 [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/<you>/k8s-agent-arena
+git clone https://github.com/SyedTahirHussan/k8s-agent-arena
 cd k8s-agent-arena
 uv sync --all-extras
 ```
@@ -125,8 +163,9 @@ keep that from being reckless:
    context. `--context`, `--kubeconfig`, `--server`, `--token`, `--as`, the
    `config` subcommand, `proxy` and `port-forward` are all refused.
 
-Do not point this at a cluster you care about. It is built on the assumption
-that everything it can reach is disposable.
+> [!WARNING]
+> Do not point this at a cluster you care about. It is built on the assumption
+> that everything it can reach is disposable.
 
 ## Reading the results
 
@@ -158,6 +197,11 @@ scenario is broken or unsolvable, not the agent.
 `--driver noop` does nothing at all. **A scenario the noop driver passes is a
 broken scenario**, because whatever score it earns is what that scenario awards
 for inaction.
+
+> [!NOTE]
+> **The control earned its keep on its first run.** It found a scenario that
+> graded a crash-looping workload as fixed. Detail below — it is the most
+> instructive thing in this repository.
 
 That control caught a real defect on its first run. The do-nothing driver
 *passed* `oom-crashloop`. The container was being OOMKilled correctly — but it
