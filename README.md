@@ -12,7 +12,7 @@
 [![python](https://img.shields.io/badge/python-3.13-3776AB)](pyproject.toml)
 [![kubernetes](https://img.shields.io/badge/kubernetes-v1.36-326CE5)](https://kind.sigs.k8s.io/)
 
-**[Results →](docs/index.html)**
+### **[→ Read the results](https://syedtahirhussan.github.io/k8s-agent-arena/)**
 
 </div>
 

@@ -99,7 +99,24 @@
   header.masthead {
     padding: clamp(3rem, 8vw, 6rem) 0 2.5rem;
     border-bottom: 1px solid var(--hairline);
+    position: relative;
   }
+
+  #theme-toggle {
+    position: absolute;
+    top: 1.5rem;
+    right: 0;
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: .06em;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--hairline);
+    border-radius: 2px;
+    padding: .35rem .7rem;
+    cursor: pointer;
+  }
+  #theme-toggle:hover { color: var(--ink); border-color: var(--muted); }
 
   .eyebrow {
     font-family: var(--mono);
@@ -382,6 +399,9 @@
 <div class="wrap">
 
   <header class="masthead">
+    <button id="theme-toggle" type="button" aria-label="Switch colour theme">
+      <span aria-hidden="true">◐</span> theme
+    </button>
     <p class="eyebrow">Benchmark results</p>
     <h1>k8s-agent-arena</h1>
     <p class="standfirst">
@@ -677,6 +697,23 @@ of 3 — the workload is not stable</pre>
   }
 
   render();
+
+  // Standalone the page has no host chrome, so the two themes need a way in.
+  // Default stays with the OS until the reader overrides it.
+  (function themeToggle() {
+    const root = document.documentElement;
+    const button = document.getElementById("theme-toggle");
+    const stored = localStorage.getItem("arena-theme");
+    if (stored) root.setAttribute("data-theme", stored);
+
+    button.addEventListener("click", () => {
+      const prefersDark = matchMedia("(prefers-color-scheme: dark)").matches;
+      const current = root.getAttribute("data-theme") || (prefersDark ? "dark" : "light");
+      const next = current === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      localStorage.setItem("arena-theme", next);
+    });
+  })();
 </script>
 
 </body>
