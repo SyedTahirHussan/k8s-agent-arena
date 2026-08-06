@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from arena.cluster import delete_cluster, list_clusters, orphaned_clusters
+from arena.env import load_dotenv
 from arena.drivers.base import Budget
 from arena.drivers.noop import NoopDriver
 from arena.drivers.scripted import ScriptedDriver
@@ -27,6 +28,11 @@ from arena.scenario import Scenario, ScenarioError, load_scenario
 #: Scenarios live beside the source in a checkout. Installed as a wheel they do
 #: not ship, so fall back to the working directory.
 SCENARIO_ROOT = Path(__file__).resolve().parents[2] / "scenarios"
+
+
+def _project_root() -> Path:
+    root = Path(__file__).resolve().parents[2]
+    return root if (root / "scenarios").is_dir() else Path.cwd()
 
 
 def _scenario_root() -> Path:
@@ -190,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="leave clusters running for post-mortem (you must delete them)")
     run.add_argument("--out", help="where to write raw JSON results")
     run.set_defaults(func=cmd_run)
+
+    # Read .env before dispatching, so the documented setup actually works.
+    load_dotenv(_project_root() / ".env")
 
     args = parser.parse_args(argv)
     try:

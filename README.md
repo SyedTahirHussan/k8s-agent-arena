@@ -45,13 +45,30 @@ uv run arena run --driver solution     # replay the known fix: proves scenarios 
 uv run arena run --driver noop         # the control: what a scenario awards for doing nothing
 ```
 
-To run a model, put your key in the environment — never on the command line,
-where it lands in shell history:
+To run a model, put your key in `.env` (gitignored) or export it. Never pass it
+as a command-line argument, where it lands in shell history:
 
 ```bash
-export GEMINI_API_KEY=...              # or copy .env.example to .env
+cp .env.example .env                   # then edit in your key
 uv run arena run --driver gemini --model gemini-3.6-flash --repeats 3
 ```
+
+An exported `GEMINI_API_KEY` always takes precedence over `.env`. Credentials are
+checked with one cheap API call before any cluster is provisioned, so a bad key
+costs a second rather than an hour.
+
+If a run is interrupted, the cluster it was building is cleaned up on the way
+out. To remove anything stranded by an earlier crash:
+
+```bash
+uv run arena clean
+```
+
+That only ever touches `arena-<random>` clusters; your own kind clusters are
+never candidates.
+
+> Every command needs the `uv run` prefix unless you activate the venv —
+> `arena` alone is not on your `PATH`. And run from the repository root.
 
 Every run is a fresh cluster, which costs roughly a minute of provisioning. A
 five-scenario sweep at three repeats is about 15–25 minutes of wall clock.
