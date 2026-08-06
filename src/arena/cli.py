@@ -52,7 +52,12 @@ def _make_driver(kind: str, scenario: Scenario, model: str, thinking: str):
     if kind == "gemini":
         from arena.drivers.gemini import GeminiDriver
 
-        return GeminiDriver(model=model, thinking_level=thinking)
+        try:
+            return GeminiDriver(model=model, thinking_level=thinking)
+        except ValueError as exc:
+            # A missing key is a setup mistake, not a bug. Say so plainly rather
+            # than printing a traceback.
+            raise SystemExit(str(exc)) from exc
     raise SystemExit(f"unknown driver {kind!r}")
 
 

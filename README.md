@@ -130,6 +130,42 @@ verification output and the list of collateral resources — are written to
 `results/`. Preview model ids get retired and silently repointed, so a number
 without a recorded model id and date is not citable.
 
+## Validation
+
+Two drivers exist to check the benchmark rather than to compete in it, and both
+run before any model does.
+
+`--driver solution` replays each scenario's known-good fix. If it fails, the
+scenario is broken or unsolvable, not the agent.
+
+`--driver noop` does nothing at all. **A scenario the noop driver passes is a
+broken scenario**, because whatever score it earns is what that scenario awards
+for inaction.
+
+That control caught a real defect on its first run. The do-nothing driver
+*passed* `oom-crashloop`. The container was being OOMKilled correctly — but it
+ran for about one second before each kill (`startedAt 05:56:33`,
+`finishedAt 05:56:34`), and with no readiness probe that second is a window in
+which the pod reports Ready. Because grading polls until it passes, over a 240s
+timeout it eventually lands inside the window and declares a crash-looping
+workload fixed.
+
+Readiness cannot distinguish healthy from crash-looping. Stability is now
+asserted separately, via restart count, and the control fails the scenario as it
+should:
+
+```
+- pods matching app=cache have restarted fewer than 3 time(s): a container has
+  restarted 5 time(s), at or above the limit of 3 - the workload is not stable
+```
+
+The same run found `pvc-pending` charging the agent for a PersistentVolume the
+storage provisioner had created in response to a sanctioned PVC change. Its
+blast radius went from 1 to 0 once dynamically provisioned PVs were treated the
+same way as a Deployment's ReplicaSets.
+
+Reference results from both drivers are committed under `results/reference/`.
+
 ## Design notes
 
 **Noise filtering is what makes blast radius possible.** A literal diff of two
