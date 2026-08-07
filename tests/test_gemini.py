@@ -425,3 +425,101 @@ def test_per_minute_throttling_is_still_waited_out():
 
     assert transcript.stop_reason == "finished"
     assert naps.slept
+
+
+# --- pacing ------------------------------------------------------------------
+# The same five-per-minute window as Cerebras, and the same arithmetic: six to
+# eight requests per run means being refused partway through unless they are
+# spaced up front.
+
+class PacingClock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+def test_requests_are_paced_to_the_providers_window():
+    from arena.ratelimit import RateLimiter
+
+    clock = PacingClock()
+    limiter = RateLimiter(max_requests=2, per_seconds=60.0, now=clock, sleep=clock.sleep)
+    client = FakeGemini([
+        model_calls(["get", "pods"]),
+        model_calls(["get", "events"]),
+        model_says("done"),
+    ])
+
+    GeminiDriver(client=client, limiter=limiter, now=clock).run(
+        task="fix it", tools=RecordingTools(), budget=Budget(max_seconds=10_000)
+    )
+
+    assert clock.slept, "the third request had to wait for the window"
+
+
+def test_an_injected_client_is_not_paced_by_default():
+    """A test double has no quota to protect, and real sleeps would stall the suite."""
+    client = FakeGemini([model_calls(["get", "pods"])] * 30)
+
+    transcript = GeminiDriver(client=client).run(
+        task="fix it", tools=RecordingTools(), budget=Budget(max_turns=20)
+    )
+
+    assert transcript.stop_reason == "budget_exhausted"
+
+
+def test_a_real_client_is_paced_by_default(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyExample")
+
+    driver = GeminiDriver()
+
+    assert driver.limiter is not None
+    assert driver.limiter.max_requests == 5
+
+
+# --- transient server errors -------------------------------------------------
+# The same reasoning as the Cerebras driver, where a sweep lost two of fifteen
+# runs to HTTP 500s. A 5xx is the provider having a bad second; the request after
+# it usually works, and a run that never issued a tool call says nothing about
+# the model while still occupying a row.
+
+def test_a_transient_server_error_is_retried():
+    naps = Naps()
+    client = FakeGemini([Boom("503 Service Unavailable", code=503), model_says("done")])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "finished"
+    assert naps.slept
+
+
+def test_repeated_server_errors_still_give_up():
+    naps = Naps()
+    client = FakeGemini([Boom("500 Internal Error", code=500)] * 20)
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "error"
+    assert len(naps.slept) <= 6
+
+
+def test_a_client_error_is_still_not_retried():
+    naps = Naps()
+    client = FakeGemini([Boom("400 INVALID_ARGUMENT", code=400), model_says("done")])
+
+    transcript = GeminiDriver(client=client, sleep=naps).run(
+        task="fix it", tools=RecordingTools(), budget=Budget()
+    )
+
+    assert transcript.stop_reason == "error"
+    assert naps.slept == []
