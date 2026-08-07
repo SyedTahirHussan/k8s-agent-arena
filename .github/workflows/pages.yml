@@ -8,11 +8,13 @@ on:
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
-# Allow one deployment at a time; a queued run supersedes an older one rather
-# than racing it.
+# One deployment at a time. cancel-in-progress must stay true: only the newest
+# commit is worth publishing, and with it false a run that stalls in `waiting`
+# holds the group indefinitely, so every later push queues behind a run that
+# will never finish. That deadlock is what took the site down, not an outage.
 concurrency:
   group: pages
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: read
