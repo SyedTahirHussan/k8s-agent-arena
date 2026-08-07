@@ -21,6 +21,7 @@ from arena.env import load_dotenv
 from arena.drivers.base import Budget
 from arena.drivers.noop import NoopDriver
 from arena.drivers.scripted import ScriptedDriver
+from arena.ratelimit import DEFAULT_MAX_REQUESTS, RateLimiter
 from arena.report import aggregate, to_markdown, write_results
 from arena.runner import RunResult, run_scenario
 from arena.scenario import Scenario, ScenarioError, load_scenario
@@ -47,23 +48,52 @@ def discover(root: Path | None = None) -> list[Scenario]:
     return [load_scenario(path) for path in sorted(root.glob("*/scenario.yaml"))]
 
 
-def _make_driver(kind: str, scenario: Scenario, model: str, thinking: str):
+#: Each API-backed driver brings its own default. A single shared default would
+#: belong to one of them and mislabel every run of the other - and would name a
+#: model for `noop` and `solution`, which contact no API at all.
+DEFAULT_MODELS = {
+    "gemini": "gemini-3.6-flash",
+    "cerebras": "gpt-oss-120b",
+}
+
+
+def resolve_model(driver: str, model: str | None) -> str | None:
+    """The model a driver will actually call, or None if it calls none."""
+    return model or DEFAULT_MODELS.get(driver)
+
+
+def _make_driver(
+    kind: str,
+    scenario: Scenario | None,
+    model: str,
+    thinking: str,
+    limiter: RateLimiter | None = None,
+):
     if kind == "noop":
         return NoopDriver()
     if kind == "solution":
-        if not scenario.solution:
+        if not scenario or not scenario.solution:
             raise SystemExit(
                 f"scenario {scenario.id!r} has no reference solution to replay"
             )
         return ScriptedDriver(scenario.solution, name="solution")
-    if kind == "gemini":
-        from arena.drivers.gemini import GeminiDriver
-
+    if kind in DEFAULT_MODELS:
         try:
-            return GeminiDriver(model=model, thinking_level=thinking)
+            if kind == "gemini":
+                from arena.drivers.gemini import GeminiDriver
+
+                return GeminiDriver(
+                    model=model, thinking_level=thinking, limiter=limiter
+                )
+
+            from arena.drivers.cerebras import CerebrasDriver
+
+            return CerebrasDriver(
+                model=model, reasoning_effort=thinking, limiter=limiter
+            )
         except ValueError as exc:
-            # A missing key is a setup mistake, not a bug. Say so plainly rather
-            # than printing a traceback.
+            # A missing key or an unsupported thinking level is a setup mistake,
+            # not a bug. Say so plainly rather than printing a traceback.
             raise SystemExit(str(exc)) from exc
     raise SystemExit(f"unknown driver {kind!r}")
 
@@ -144,18 +174,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Prove the credentials work before provisioning anything. API failures are
     # recorded as failed runs rather than raised, so without this a bad key
     # produces a complete sweep in which every row looks like a model failure.
-    probe = _make_driver(args.driver, scenarios[0], args.model, args.thinking)
+    model = resolve_model(args.driver, args.model)
+    # One limiter for the whole sweep: the allowance belongs to the API key, and
+    # a fresh driver is built per repeat. Per-driver limiters would let every
+    # scenario open with a burst the provider refuses.
+    limiter = RateLimiter(max_requests=args.requests_per_minute)
+    probe = _make_driver(args.driver, scenarios[0], model, args.thinking, limiter)
     if check := getattr(probe, "preflight", None):
         if problem := check():
             print(f"preflight failed, not starting the sweep:\n  {problem}", file=sys.stderr)
             return 1
-        print(f"credentials ok for {args.model}")
+        print(f"credentials ok for {probe.model}")
 
     print(f"driver={args.driver} repeats={args.repeats} scenarios={len(scenarios)}\n")
     for scenario in scenarios:
         print(f"{scenario.id}: {scenario.title}", flush=True)
         for attempt in range(args.repeats):
-            driver = _make_driver(args.driver, scenario, args.model, args.thinking)
+            driver = _make_driver(args.driver, scenario, model, args.thinking, limiter)
             result = run_scenario(scenario, driver, budget=budget, keep=args.keep)
             results.append(result)
             _print_result(result)
@@ -172,7 +207,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if any(r.passed for r in results) else 1
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="arena", description="Benchmark LLM agents operating Kubernetes clusters"
     )
@@ -189,24 +224,37 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="run scenarios against a driver")
     run.add_argument(
         "--driver", default="solution",
-        choices=["noop", "solution", "gemini"],
+        choices=["noop", "solution", "gemini", "cerebras"],
         help="agent under test (default: solution, which replays the known fix)",
     )
     run.add_argument("--scenario", action="append", help="scenario id (repeatable)")
     run.add_argument("--repeats", type=int, default=1,
                      help="runs per scenario; >1 is how variance gets reported")
-    run.add_argument("--model", default="gemini-3.6-flash", help="model id for --driver gemini")
+    run.add_argument("--model", default=None,
+                     help="model id; defaults to the driver's own (gemini-3.6-flash "
+                          "for gemini, gpt-oss-120b for cerebras)")
     run.add_argument("--thinking", default="low",
                      choices=["minimal", "low", "medium", "high"],
-                     help="Gemini thinking level")
+                     help="reasoning effort. gemini accepts all four; cerebras "
+                          "accepts low, medium and high")
     run.add_argument("--max-turns", type=int, default=25, help="tool-call budget per run")
     run.add_argument("--max-seconds", type=int, default=1200,
                      help="wall-clock budget per run; waiting out rate limits counts "
                           "towards it, so free-tier keys need headroom")
     run.add_argument("--keep", action="store_true",
                      help="leave clusters running for post-mortem (you must delete them)")
+    run.add_argument("--requests-per-minute", type=int, default=DEFAULT_MAX_REQUESTS,
+                     help="pace API calls to stay inside the provider's window. "
+                          "Both free tiers allow 5; raise it if yours allows more, "
+                          "because the harness will not exceed this on its own")
     run.add_argument("--out", help="where to write raw JSON results")
     run.set_defaults(func=cmd_run)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
 
     # Read .env before dispatching, so the documented setup actually works.
     load_dotenv(_project_root() / ".env")

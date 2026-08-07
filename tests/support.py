@@ -102,6 +102,130 @@ class FakeGemini:
         return nxt
 
 
+def _completion(message: dict, usage: dict, finish_reason: str):
+    """Build a real `ChatCompletion` so the driver parses genuine SDK objects."""
+    from openai.types.chat import ChatCompletion
+
+    return ChatCompletion.model_validate({
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "gpt-oss-120b",
+        "choices": [{"index": 0, "finish_reason": finish_reason, "message": message}],
+        "usage": usage,
+    })
+
+
+def cerebras_calls(*commands: list[str], reasoning: str = "checking the pods"):
+    """A Cerebras response that asks to run one or more kubectl commands.
+
+    Token counts mirror `model_calls` so the two drivers' accounting tests read
+    the same, but the mechanism differs: `completion_tokens` already contains
+    `reasoning_tokens`, where Gemini reports thinking separately.
+    """
+    import json
+
+    return _completion(
+        {
+            "role": "assistant",
+            "reasoning": reasoning,
+            "tool_calls": [
+                {
+                    "id": f"call-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": "kubectl",
+                        "arguments": json.dumps({"args": command}),
+                    },
+                }
+                for index, command in enumerate(commands)
+            ],
+        },
+        {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150,
+         "completion_tokens_details": {"reasoning_tokens": 30}},
+        "tool_calls",
+    )
+
+
+def cerebras_applies(command: list[str], manifest: str):
+    """A response that pipes a manifest to kubectl's stdin."""
+    import json
+
+    return _completion(
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-0",
+                "type": "function",
+                "function": {
+                    "name": "kubectl",
+                    "arguments": json.dumps({"args": command, "manifest": manifest}),
+                },
+            }],
+        },
+        {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150,
+         "completion_tokens_details": {"reasoning_tokens": 30}},
+        "tool_calls",
+    )
+
+
+def cerebras_says(text: str):
+    """A Cerebras response that stops and reports, calling no tools."""
+    return _completion(
+        {"role": "assistant", "content": text},
+        {"prompt_tokens": 50, "completion_tokens": 15, "total_tokens": 65,
+         "completion_tokens_details": {"reasoning_tokens": 5}},
+        "stop",
+    )
+
+
+class FakeCerebras:
+    """A stand-in for `openai.OpenAI` that replays prepared responses.
+
+    Shaped like the real client - `client.chat.completions.create(...)` - and
+    hands back real `ChatCompletion` objects, so the driver does genuine parsing.
+    Queued exceptions are raised, which is how the failure paths get covered.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests: list[dict] = []
+        self.chat = self
+        self.completions = self
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        if not self.responses:
+            return cerebras_says("done")
+        nxt = self.responses.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+
+def rate_limited(retry_after: str | None = None, remaining_day: str | None = None):
+    """A genuine `openai.RateLimitError`, built from a real 429 response.
+
+    Cerebras states the wait in headers rather than in the message text, so the
+    headers are what the driver has to read.
+    """
+    import httpx
+    import openai
+
+    headers = {}
+    if retry_after is not None:
+        headers["retry-after"] = retry_after
+    if remaining_day is not None:
+        headers["x-ratelimit-remaining-requests-day"] = remaining_day
+
+    request = httpx.Request("POST", "https://api.cerebras.ai/v1/chat/completions")
+    response = httpx.Response(
+        429, headers=headers, request=request,
+        json={"error": {"message": "rate limit exceeded"}},
+    )
+    return openai.RateLimitError("rate limit exceeded", response=response, body=None)
+
+
 class RecordingTools:
     """A kubectl surface that records invocations instead of running them.
 
