@@ -9,6 +9,8 @@ command expects that to take effect, not to be quietly overridden by a stale
 file they set up weeks ago.
 """
 
+import pytest
+
 from arena.env import load_dotenv, parse_dotenv
 
 
@@ -68,3 +70,35 @@ def test_the_file_fills_in_what_the_shell_did_not_set(tmp_path, monkeypatch):
 
 def test_a_missing_file_is_not_an_error(tmp_path):
     load_dotenv(tmp_path / "nope.env")
+
+
+# --- credentials that arrive damaged -----------------------------------------
+# Keys get copied out of documents and web pages, which brings curly quotes with
+# them, and the shell keeps those as literal characters. Both drivers need the
+# same check, so it lives beside the rest of the credential reading.
+
+def test_a_key_is_returned_unchanged_when_it_is_clean():
+    from arena.env import require_key
+
+    assert require_key("CEREBRAS_API_KEY", "csk-example") == "csk-example"
+
+
+def test_a_missing_key_names_the_variable_that_is_missing():
+    from arena.env import require_key
+
+    with pytest.raises(ValueError, match="CEREBRAS_API_KEY"):
+        require_key("CEREBRAS_API_KEY", "")
+
+
+def test_a_key_wrapped_in_smart_quotes_is_refused():
+    from arena.env import require_key
+
+    with pytest.raises(ValueError, match="quote"):
+        require_key("CEREBRAS_API_KEY", "‘csk-example’")
+
+
+def test_a_key_wrapped_in_straight_quotes_is_refused():
+    from arena.env import require_key
+
+    with pytest.raises(ValueError, match="quote"):
+        require_key("GEMINI_API_KEY", '"AIzaSyExample"')
