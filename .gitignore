@@ -27,3 +27,6 @@ kubeconfig
 results/*
 !results/reference/
 .pytest_cache/
+
+# macOS
+.DS_Store

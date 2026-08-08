@@ -26,15 +26,18 @@ import re
 import time
 
 from arena.drivers.base import Budget, ToolCall, ToolSurface, Transcript
+from arena.env import require_key
+from arena.ratelimit import RateLimiter
 
 DEFAULT_MODEL = "gemini-3.6-flash"
 #: Per-request ceiling. The SDK waits forever by default, and a single hung read
 #: otherwise stalls every remaining run in a sweep.
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 120
 DEFAULT_THINKING_LEVEL = "low"
-#: The free tier allows five requests per minute and one agent run needs six to
-#: eight, so being throttled mid-run is the normal case, not an edge case.
-MAX_RATE_LIMIT_RETRIES = 5
+#: How many times one request is retried before the run is given up on.
+#: Throttling and 5xx are both worth retrying; a provider that is still
+#: refusing after five attempts is down, and waiting longer wedges the sweep.
+MAX_TRANSIENT_RETRIES = 5
 #: Used when the API throttles without saying for how long.
 FALLBACK_BACKOFF_SECONDS = 30.0
 
@@ -100,6 +103,17 @@ def is_rate_limited(exc: Exception) -> bool:
     return "429" in text or "RESOURCE_EXHAUSTED" in text
 
 
+def is_transient(exc: Exception) -> bool:
+    """Is this worth trying again?
+
+    Throttling and 5xx both are: the provider is busy or having a bad second, and
+    the next request usually works. A 4xx is not - the request is wrong and will
+    be refused identically however many times it is sent.
+    """
+    code = getattr(exc, "code", None)
+    return is_rate_limited(exc) or (code is not None and 500 <= code < 600)
+
+
 def retry_after(exc: Exception, attempt: int) -> float:
     """How long to wait. The API usually says; otherwise back off exponentially.
 
@@ -128,6 +142,7 @@ class GeminiDriver:
         api_key: str | None = None,
         thinking_level: str = DEFAULT_THINKING_LEVEL,
         timeout_seconds: int = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        limiter: RateLimiter | None = None,
         now=time.monotonic,
         sleep=time.sleep,
     ):
@@ -140,32 +155,30 @@ class GeminiDriver:
 
         if client is not None:
             self._client = client
+            # An injected client is a test double with no quota behind it. Pacing
+            # one would spend real seconds protecting nothing.
+            self.limiter = limiter
             return
 
-        key = os.environ.get("GEMINI_API_KEY") if api_key is None else api_key
-        if not key:
-            raise ValueError(
-                "GEMINI_API_KEY is not set. Export it in your shell or put it in "
-                ".env - never pass it on the command line, where it lands in shell "
-                "history."
-            )
-
-        # Copying a key out of a document or web page brings curly quotes with
-        # it, and the shell keeps them as literal characters. The resulting 401
-        # is otherwise only discovered after the first cluster is provisioned.
-        if any(ch in key for ch in "“”‘’\"'"):
-            raise ValueError(
-                "GEMINI_API_KEY contains a quote character. This usually means it "
-                "was exported with curly quotes copied from a document, e.g. "
-                'export GEMINI_API_KEY=“AIza...”, which the shell keeps literally. '
-                "Re-export it with straight quotes or none at all."
-            )
+        key = require_key(
+            "GEMINI_API_KEY",
+            os.environ.get("GEMINI_API_KEY") if api_key is None else api_key,
+        )
 
         from google import genai
 
         self._client = genai.Client(
             api_key=key, http_options=http_options(self.timeout_seconds)
         )
+        # A sweep shares one limiter across its runs, because the allowance
+        # belongs to the key. A driver built on its own still needs a safe
+        # default: unpaced, it is throttled partway through every run.
+        self.limiter = limiter or RateLimiter()
+
+    def _pace(self) -> None:
+        """Wait our turn in the provider's window. Every attempt counts, retries too."""
+        if self.limiter is not None:
+            self.limiter.acquire()
 
     def _config(self):
         from google.genai import types
@@ -192,6 +205,7 @@ class GeminiDriver:
         from google.genai import types
 
         try:
+            self._pace()
             self._client.models.generate_content(
                 model=self.model,
                 contents=[types.Content(role="user", parts=[types.Part(text="ok")])],
@@ -224,8 +238,9 @@ class GeminiDriver:
                 break
 
             response = None
-            for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+            for attempt in range(MAX_TRANSIENT_RETRIES + 1):
                 try:
+                    self._pace()
                     response = self._client.models.generate_content(
                         model=self.model, contents=contents, config=self._config()
                     )
@@ -240,7 +255,7 @@ class GeminiDriver:
                             f"Enable billing to continue. Original error: {exc}"
                         )
                         break
-                    if is_rate_limited(exc) and attempt < MAX_RATE_LIMIT_RETRIES:
+                    if is_transient(exc) and attempt < MAX_TRANSIENT_RETRIES:
                         # `contents` is untouched, so the retry resumes the same
                         # conversation rather than restarting the task.
                         self._sleep(retry_after(exc, attempt))

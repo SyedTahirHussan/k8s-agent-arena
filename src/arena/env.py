@@ -40,6 +40,36 @@ def parse_dotenv(text: str) -> dict[str, str]:
     return settings
 
 
+#: Both curly and straight. A key never legitimately contains one, so any of them
+#: is a paste artefact rather than part of the credential.
+_QUOTES = "“”‘’\"'"
+
+
+def require_key(name: str, value: str | None) -> str:
+    """Return ``value``, or explain what is wrong with it.
+
+    A bad key is otherwise only discovered on the first API call, which happens
+    after the first cluster has been provisioned - an hour of wall clock across a
+    sweep to learn the credentials were never going to work.
+    """
+    if not value:
+        raise ValueError(
+            f"{name} is not set. Export it in your shell or put it in .env - "
+            "never pass it on the command line, where it lands in shell history."
+        )
+
+    # Copying a key out of a document or web page brings curly quotes with it,
+    # and the shell keeps them as literal characters.
+    if any(ch in value for ch in _QUOTES):
+        raise ValueError(
+            f"{name} contains a quote character. This usually means it was "
+            f"exported with quotes copied from a document, e.g. {name}=“sk-...”, "
+            "which the shell keeps literally. Re-export it with no quotes at all."
+        )
+
+    return value
+
+
 def load_dotenv(path: str | Path = ".env") -> None:
     """Load ``path`` into the environment without overriding anything already set."""
     path = Path(path)

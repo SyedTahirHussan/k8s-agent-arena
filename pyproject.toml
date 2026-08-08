@@ -16,6 +16,11 @@ dependencies = [
 gemini = [
     "google-genai>=1.0.0",
 ]
+# Cerebras speaks the OpenAI wire format, so the generic client reaches it - and
+# any other OpenAI-compatible endpoint - by changing one base URL.
+cerebras = [
+    "openai>=1.0.0",
+]
 
 [project.scripts]
 arena = "arena.cli:main"
@@ -37,5 +42,5 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 markers = [
     "cluster: requires a live kind cluster (deselect with '-m \"not cluster\"')",
-    "live_api: requires GEMINI_API_KEY and spends money (deselect with '-m \"not live_api\"')",
+    "live_api: requires GEMINI_API_KEY or CEREBRAS_API_KEY and spends quota (deselect with '-m \"not live_api\"')",
 ]

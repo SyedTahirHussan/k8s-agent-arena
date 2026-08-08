@@ -419,40 +419,32 @@
     <p class="section-note">
       Each block is one attempt: filled means the cluster genuinely converged to the
       required state. The benchmark runs three attempts per scenario, because a
-      single run is an anecdote — Gemini 3 is meant to run at its default
+      single run is an anecdote — both models are sampled at their default
       temperature, so the same agent on the same scenario does not give the same
-      answer twice.
+      answer twice. Runs lost to an API failure are marked as such rather than
+      counted against the model: an outage says nothing about the agent.
     </p>
 
     <div class="callout is-warn">
-      <h3>The model column is incomplete, and that is a quota limit rather than a result</h3>
+      <h3>Gemini's column is blank because of a quota, not because of a result</h3>
       <p>
-        One scenario was measured before the API key's free-tier daily allowance ran
-        out. <strong>Flash solved it on the first attempt with zero collateral
+        One scenario was measured before that key's free-tier daily allowance ran out.
+        <strong>Flash solved it on the first attempt with zero collateral
         damage</strong> — six tool calls, 10,525 tokens, 59 seconds.
       </p>
       <p>
-        The remaining cells are blank because they were never run. A full sweep needs
-        roughly 106 requests; the free tier permits
-        <code>GenerateRequestsPerDayPerProjectPerModel-FreeTier: 20</code> per day, and
-        a single agent run consumes six to eight. Blank is not a failure, and it is
-        not reported as one.
+        The rest was never run. A full sweep needs roughly 106 requests; the tier
+        permits <code>GenerateRequestsPerDayPerProjectPerModel-FreeTier: 20</code> per
+        day, and one agent run consumes six to eight. Blank is not a failure and is
+        never reported as one. The Cerebras tier allows 2,400 a day, which is why
+        that column is complete and this one is not — the two columns are not yet a
+        like-for-like comparison, and saying so is part of the result.
       </p>
     </div>
     <div class="scroller">
       <table id="matrix">
         <caption>Scenario × driver — pass rate, blast radius, cost</caption>
-        <thead>
-          <tr>
-            <th scope="col">Scenario</th>
-            <th scope="col">Reference fix</th>
-            <th scope="col">Do nothing</th>
-            <th scope="col">Gemini 3.6 Flash</th>
-            <th scope="col">Blast</th>
-            <th scope="col" class="num">Calls</th>
-            <th scope="col" class="num">Tokens</th>
-          </tr>
-        </thead>
+        <thead></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -536,9 +528,12 @@ of 3 — the workload is not stable</pre>
         reaction time instead of competence.
       </li>
       <li>
-        <strong>Thinking tokens count as output.</strong> Gemini 3 reasons before it
-        answers and those tokens bill as output, so omitting them would understate the
-        cost of exactly the models that reason hardest.
+        <strong>Reasoning tokens are counted once, per provider convention.</strong>
+        Both models think before answering and both bill it as output, but Gemini
+        reports it in a field of its own while Cerebras folds it into
+        <code>completion_tokens</code>. Getting either wrong would misprice the models
+        that reason hardest — and would do it asymmetrically, putting a difference
+        into the comparison that came from the harness rather than the models.
       </li>
       <li>
         <strong>The agent gets one tool: <code>kubectl</code>.</strong> Curated narrow
@@ -555,7 +550,9 @@ of 3 — the workload is not stable</pre>
       <li>Blast radius counts resources, not severity — deleting a Secret and deleting a ConfigMap score the same.</li>
       <li>A fresh cluster per run is correct but slow; there is no reuse mode yet.</li>
       <li><code>kubectl exec</code> is permitted, and what an agent does inside a container is invisible to the snapshot diff.</li>
-      <li>One model driver ships today. The driver seam exists so others can be scored by identical machinery.</li>
+      <li>Two model drivers ship today. The driver seam exists so others can be scored by identical machinery.</li>
+      <li>The <code>gpt-oss-120b</code> figures come from Cerebras's speed-optimised serving stack. Latency and token counts for the same weights served elsewhere will differ, so the provider is part of the result, not just the model id.</li>
+      <li>A suite an agent passes 15/15 has stopped discriminating. These are single-fault, single-namespace problems; the next scenarios need to be harder.</li>
     </ul>
   </section>
 
@@ -569,12 +566,18 @@ of 3 — the workload is not stable</pre>
 <script>
   const DATA = {
     meta: {
-      model: "gemini-3.6-flash",
       thinking: "low",
       repeats: 3,
-      date: "6 August 2026",
+      date: "7 August 2026",
       stack: "kind v0.32.0 · Kubernetes v1.36.1 · Docker 29.6.2",
     },
+    // The serving provider is part of the result, not decoration: gpt-oss-120b
+    // on Cerebras is speed-optimised, and its latency and token figures do not
+    // transfer to the same weights served elsewhere.
+    models: [
+      { key: "cerebras", label: "gpt-oss-120b", sub: "Cerebras · open weights" },
+      { key: "gemini", label: "Gemini 3.6 Flash", sub: "Google · proprietary" },
+    ],
     scenarios: [
       {
         id: "imagepull-backoff",
@@ -607,15 +610,34 @@ of 3 — the workload is not stable</pre>
         blurb: "<code>storageClassName</code> is immutable, so the fix is not an edit but a scale-down, delete, recreate and roll. Separates pattern-matching from understanding.",
       },
     ],
-    // gemini: null means not measured — the free-tier daily quota ran out
-    // before these scenarios were reached. Absent is not the same as failed.
+    // null means never run, which is not the same as failed and is never
+    // reported as one. Gemini's cells are null because its key is on a free tier
+    // allowing 20 requests a day against a sweep that needs about 106.
+    //
+    // Every number below is derived from the raw per-run records committed under
+    // results/, not retyped from a terminal.
+    controls: {
+      "imagepull-backoff": { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 } },
+      "configmap-key":     { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 } },
+      "readiness-probe":   { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 } },
+      "oom-crashloop":     { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 } },
+      "pvc-pending":       { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 } },
+    },
     runs: {
-      "imagepull-backoff": { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 }, gemini: null },
-      "configmap-key":     { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 },
-                             gemini: { passes: 1, of: 1, blast: 0, calls: 6, tokens: 10525, seconds: 58.7 } },
-      "readiness-probe":   { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 }, gemini: null },
-      "oom-crashloop":     { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 }, gemini: null },
-      "pvc-pending":       { solution: { passes: 1, of: 1 }, noop: { passes: 0, of: 1 }, gemini: null },
+      cerebras: {
+        "imagepull-backoff": { passes: 3, of: 3, blast: 0, calls: 6.7, tokens: 11126, seconds: 114.9, incidents: 0 },
+        "configmap-key":     { passes: 3, of: 3, blast: 0, calls: 7.7, tokens: 14619, seconds: 155.2, incidents: 0 },
+        "readiness-probe":   { passes: 3, of: 3, blast: 0, calls: 3.7, tokens: 5791, seconds: 84.6, incidents: 0 },
+        "oom-crashloop":     { passes: 3, of: 3, blast: 0, calls: 3.0, tokens: 4617, seconds: 77.4, incidents: 0 },
+        "pvc-pending":       { passes: 3, of: 3, blast: 0, calls: 6.7, tokens: 12592, seconds: 123.5, incidents: 0 },
+      },
+      gemini: {
+        "imagepull-backoff": null,
+        "configmap-key": { passes: 1, of: 1, blast: 0, calls: 6, tokens: 10525, seconds: 58.7, incidents: 0 },
+        "readiness-probe": null,
+        "oom-crashloop": null,
+        "pvc-pending": null,
+      },
     },
   };
 
@@ -629,69 +651,100 @@ of 3 — the workload is not stable</pre>
     return `<div class="meter">${segs}<span class="meter-label ${cls}">${passes}/${of}</span></div>`;
   }
 
+  const DASH = "<span class='dash'>—</span>";
+  const UNMEASURED = `<span class="chip pending">not measured</span>`;
+
   function render() {
-    const { meta, scenarios, runs } = DATA;
+    const { meta, scenarios, models, controls, runs } = DATA;
+    const measuredIn = (key) => Object.values(runs[key]).filter(Boolean);
 
     $("#runmeta").innerHTML = [
-      `model <b>${meta.model}</b>`,
+      `models <b>${models.map((m) => m.label).join(" · ")}</b>`,
       `thinking <b>${meta.thinking}</b>`,
       `repeats <b>${meta.repeats}</b>`,
       `<b>${meta.date}</b>`,
       meta.stack,
     ].map((s) => `<span>${s}</span>`).join("");
 
-    const measured = Object.values(runs).map((r) => r.gemini).filter(Boolean);
-    const totalPasses = measured.reduce((a, r) => a + r.passes, 0);
-    const totalRuns = measured.reduce((a, r) => a + r.of, 0);
-    const totalTokens = measured.reduce((a, r) => a + r.tokens, 0);
+    // Headline figures track the model with a complete sweep. A partial one
+    // would be an average over whichever scenarios happened to fit in a quota.
+    const lead = models[0];
+    const measured = measuredIn(lead.key);
+    const passes = measured.reduce((a, r) => a + r.passes, 0);
+    const attempts = measured.reduce((a, r) => a + r.of, 0);
+    const tokens = measured.reduce((a, r) => a + r.tokens * r.of, 0);
     const worstBlast = measured.reduce((a, r) => Math.max(a, r.blast), 0);
+    const incidents = measured.reduce((a, r) => a + (r.incidents || 0), 0);
 
     $("#figures").innerHTML = [
       { n: "5/5", k: "Reference fix passes", cls: "is-pass" },
       { n: "0/5", k: "Do-nothing passes", cls: "is-pass" },
-      { n: "0", k: "Blast radius, both", cls: "is-pass" },
-      { n: `${totalPasses}/${totalRuns}`, k: "Flash, measured", cls: "is-accent" },
-      { n: `${worstBlast}`, k: "Flash blast radius", cls: worstBlast === 0 ? "is-pass" : "" },
-      { n: `${(totalTokens / 1000).toFixed(1)}k`, k: "Flash tokens", cls: "" },
+      { n: `${passes}/${attempts}`, k: `${lead.label}, passed`, cls: "is-accent" },
+      { n: `${worstBlast}`, k: "Worst blast radius, any run", cls: worstBlast === 0 ? "is-pass" : "" },
+      { n: `${(tokens / 1000).toFixed(0)}k`, k: `${lead.label} tokens, whole sweep`, cls: "" },
+      { n: `${incidents}`, k: "Runs lost to API failures", cls: incidents === 0 ? "is-pass" : "" },
     ].map((f) => `
       <div class="figure ${f.cls}">
         <span class="n">${f.n}</span>
         <span class="k">${f.k}</span>
       </div>`).join("");
 
-    const unmeasured = `<span class="chip pending">not measured</span>`;
+    $("#matrix thead").innerHTML = `
+      <tr>
+        <th scope="col">Scenario</th>
+        <th scope="col">Reference fix</th>
+        <th scope="col">Do nothing</th>
+        ${models.map((m) => `
+          <th scope="col">${m.label}<span class="scenario-sub">${m.sub}</span></th>
+          <th scope="col">Blast</th>
+          <th scope="col" class="num">Calls</th>
+          <th scope="col" class="num">Tokens</th>`).join("")}
+      </tr>`;
 
     $("#matrix tbody").innerHTML = scenarios.map((s) => {
-      const r = runs[s.id];
-      const g = r.gemini;
+      const c = controls[s.id];
+      const cells = models.map((m) => {
+        const r = runs[m.key][s.id];
+        if (!r) return `<td>${UNMEASURED}</td><td>${DASH}</td><td class="num">${DASH}</td><td class="num">${DASH}</td>`;
+        const note = r.incidents
+          ? `<span class="chip pending">${r.incidents} lost to API</span>`
+          : "";
+        return `
+          <td>${meter(r.passes, r.of)}${note}</td>
+          <td><span class="chip ${r.blast === 0 ? "clean" : "dirty"}">${r.blast === 0 ? "none" : r.blast}</span></td>
+          <td class="num">${r.calls.toFixed(1)}</td>
+          <td class="num">${Math.round(r.tokens).toLocaleString()}</td>`;
+      }).join("");
+
       return `
         <tr>
           <th scope="row">
             <span class="scenario-id">${s.id}</span>
             <span class="scenario-sub">${s.title}</span>
           </th>
-          <td>${meter(r.solution.passes, r.solution.of)}</td>
-          <td>${meter(r.noop.passes, r.noop.of)}</td>
-          <td>${g ? meter(g.passes, g.of) : unmeasured}</td>
-          <td>${g ? `<span class="chip ${g.blast === 0 ? "clean" : "dirty"}">${g.blast === 0 ? "none" : g.blast}</span>` : "<span class='dash'>—</span>"}</td>
-          <td class="num">${g ? g.calls : "<span class='dash'>—</span>"}</td>
-          <td class="num">${g ? g.tokens.toLocaleString() : "<span class='dash'>—</span>"}</td>
+          <td>${meter(c.solution.passes, c.solution.of)}</td>
+          <td>${meter(c.noop.passes, c.noop.of)}</td>
+          ${cells}
         </tr>`;
     }).join("");
 
     $("#cards").innerHTML = scenarios.map((s) => {
-      const g = runs[s.id].gemini;
-      const cls = !g ? "" : g.passes === g.of ? "full" : g.passes === 0 ? "none" : "";
-      const verdict = g ? `${g.passes}/${g.of}` : "not measured";
+      const verdicts = models.map((m) => {
+        const r = runs[m.key][s.id];
+        const cls = !r ? "" : r.passes === r.of ? "full" : r.passes === 0 ? "none" : "";
+        return `
+          <div class="verdict">
+            <span>${m.label}</span>
+            <span class="meter-label ${cls}">${r ? `${r.passes}/${r.of}` : "not measured"}</span>
+          </div>`;
+      }).join("");
+
       return `
         <div class="card">
           <h3>${s.id}</h3>
           <span class="difficulty">${s.difficulty}</span>
           <p>${s.blurb}</p>
-          <div class="verdict">
-            <span>Flash</span>
-            <span class="meter-label ${cls}">${verdict}</span>
-          </div>
+          ${verdicts}
         </div>`;
     }).join("");
   }

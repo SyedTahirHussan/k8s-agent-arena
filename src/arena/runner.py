@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from arena.checks import ClusterView
 from arena.cluster import ClusterError, apply_manifests, arena_cluster, snapshot
-from arena.drivers.base import Budget
+from arena.drivers.base import Budget, Transcript
 from arena.kubectl import KubectlSurface, LiveClusterView
 from arena.scenario import Scenario
 from arena.settle import evaluate_until_passing
@@ -78,6 +78,29 @@ def _failed_run(scenario: Scenario, driver, started_at: str, error: str) -> RunR
     )
 
 
+def attempt(driver, task: str, tools, budget: Budget) -> Transcript:
+    """Run ``driver``, turning a crash into a recorded failure rather than an exit.
+
+    A driver that raises is one failed attempt, not a failed sweep. The cluster is
+    still standing, so the run keeps its grading and its blast radius and simply
+    does not pass - where letting the exception out would discard every result
+    collected so far, up to an hour of them.
+
+    KeyboardInterrupt and SystemExit are deliberately not caught: someone
+    interrupting a sweep wants it to stop, not to receive a report of
+    interruptions.
+    """
+    try:
+        return driver.run(task=task, tools=tools, budget=budget)
+    except Exception as exc:  # noqa: BLE001 - the whole point is to not propagate
+        return Transcript(
+            driver=getattr(driver, "name", str(driver)),
+            model=getattr(driver, "model", ""),
+            stop_reason="harness_error",
+            summary=f"driver raised {type(exc).__name__}: {exc}",
+        )
+
+
 def run_scenario(
     scenario: Scenario,
     driver,
@@ -101,7 +124,7 @@ def run_scenario(
             before = snapshot(handle.context)
 
             tools = KubectlSurface(context=handle.context)
-            transcript = driver.run(task=scenario.task, tools=tools, budget=budget)
+            transcript = attempt(driver, scenario.task, tools, budget)
 
             view: ClusterView = LiveClusterView(context=handle.context)
             outcome = evaluate_until_passing(

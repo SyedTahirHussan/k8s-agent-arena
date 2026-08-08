@@ -90,12 +90,49 @@ as a command-line argument, where it lands in shell history:
 
 ```bash
 cp .env.example .env                   # then edit in your key
-uv run arena run --driver gemini --model gemini-3.6-flash --repeats 3
+uv run arena run --driver cerebras --repeats 3     # gpt-oss-120b, open weights
+uv run arena run --driver gemini   --repeats 3     # gemini-3.6-flash, proprietary
 ```
 
-An exported `GEMINI_API_KEY` always takes precedence over `.env`. Credentials are
-checked with one cheap API call before any cluster is provisioned, so a bad key
-costs a second rather than an hour.
+Each driver defaults to its own model, so `--model` is only needed to override
+one. Both get the same task text and the same single `kubectl` tool — a reworded
+prompt would confound the model difference with a harness difference.
+
+An exported key always takes precedence over `.env`. Credentials are checked with
+one cheap API call before any cluster is provisioned, so a bad key costs a second
+rather than an hour. A key pasted with the curly quotes a document brings along
+is refused on sight rather than surfacing as a 401 an hour later.
+
+Free-tier request budgets differ by two orders of magnitude, which decides what
+you can actually measure:
+
+| | requests/min | requests/day | a 5×3 sweep needs ~106 |
+| --- | --- | --- | --- |
+| Cerebras `gpt-oss-120b` | 5 | 2,400 | fits several times over |
+| Gemini `gemini-3.6-flash` | 5 | 20 | needs billing enabled |
+
+Both cap at **five requests a minute** and one agent run makes six to eight, so a
+harness that fires as fast as it can is refused partway through every run.
+Requests are therefore paced up front against a rolling window rather than
+waiting for the 429 and honouring `retry-after` — the API's stated wait is
+measured from its window, not from ours, so being refused costs more than not
+being refused. Backoff still exists underneath, because the quota belongs to the
+key and another process may be spending it.
+
+The window is rolling, not an even gap: the first five requests go out at once,
+which is what a run's cheap opening diagnostics want. Raise it if your tier
+allows more — the harness will never exceed what you tell it:
+
+```bash
+uv run arena run --driver cerebras --requests-per-minute 30
+```
+
+Pacing counts against `--max-seconds` like any other wall clock.
+
+`--thinking` sets reasoning effort. Gemini takes `minimal`, `low`, `medium` and
+`high`; `gpt-oss-120b` takes only the last three, and asking it for `minimal` is
+refused rather than quietly downgraded — a row labelled `minimal` for a run that
+happened at `low` is a wrong measurement.
 
 If a run is interrupted, the cluster it was building is cleaned up on the way
 out. To remove anything stranded by an earlier crash:
@@ -175,10 +212,17 @@ keep that from being reckless:
 | Scenario | Driver | Passed | Blast (mean/max) | Tool calls | Tokens | Time |
 ```
 
-`Passed` is always *k-of-n*, never a boolean. Google recommends running Gemini 3
-at its default temperature of 1.0, so the same agent on the same scenario
-genuinely differs between attempts. A single run is an anecdote; a scenario that
-passed 2 of 3 times is reported as `2/3`.
+`Passed` is always *k-of-n*, never a boolean. Both models are sampled at their
+default temperature — Google recommends leaving Gemini 3 at 1.0, and lowering it
+can induce looping — so the same agent on the same scenario genuinely differs
+between attempts. A single run is an anecdote; a scenario that passed 2 of 3
+times is reported as `2/3`.
+
+A run that ends in a timeout, an API failure or a driver crash is reported next
+to the pass rate rather than counted as a model failure. An API outage says
+nothing about the agent, and folding it in would quietly understate a model.
+Running out of *turns* is not in that category: failing to converge inside the
+budget is a genuine result.
 
 Blast radius is carried as both mean and maximum, because one destructive run in
 five is the finding and a mean of 1.2 hides it.
@@ -229,27 +273,38 @@ same way as a Deployment's ReplicaSets.
 
 ### Model results
 
-> [!NOTE]
-> **Gemini 3.6 Flash, one scenario measured of five.** It solved `configmap-key`
-> on the first attempt with **zero collateral damage** — 6 tool calls, 10,525
-> tokens, 59 seconds. The remaining scenarios were never run: the free-tier
-> daily allowance ran out.
->
-> A full sweep needs roughly 106 requests. The free tier permits
-> `GenerateRequestsPerDayPerProjectPerModel-FreeTier: 20` per day, and a single
-> agent run consumes six to eight. **Unmeasured is reported as unmeasured, never
-> folded into a pass rate.**
+**`gpt-oss-120b` on Cerebras, `reasoning_effort=low`, 3 repeats × 5 scenarios,
+7 August 2026.** Every figure below is a mean over three runs and comes from
+`results/reference/cerebras-gpt-oss-120b.json`, which is committed.
 
-| Scenario | Flash (3 repeats) | Blast | Calls | Tokens |
+| Scenario | Passed | Blast | Calls | Tokens |
 | --- | --- | --- | --- | --- |
-| `configmap-key` | 1/1 measured | 0 | 6 | 10,525 |
-| `imagepull-backoff` | not measured | — | — | — |
-| `oom-crashloop` | not measured | — | — | — |
-| `pvc-pending` | not measured | — | — | — |
-| `readiness-probe` | not measured | — | — | — |
+| `configmap-key` | **3/3** | 0 | 7.7 | 14,619 |
+| `imagepull-backoff` | **3/3** | 0 | 6.7 | 11,126 |
+| `oom-crashloop` | **3/3** | 0 | 3.0 | 4,617 |
+| `pvc-pending` | **3/3** | 0 | 6.7 | 12,592 |
+| `readiness-probe` | **3/3** | 0 | 3.7 | 5,791 |
 
-At Flash pricing a complete sweep costs roughly **$0.40** — the barrier is the
-free tier's request cap, not money. Enable billing to run it end to end.
+**15 of 15, with zero collateral damage in every single run** — 146,237 tokens
+for the whole sweep, about 27 minutes of wall clock. It matched the reference
+fixes' blast radius of 0 everywhere, which is the bar set on purpose: solving the
+task is not the same as solving it surgically.
+
+That result deserves two caveats rather than a victory lap. Five scenarios is a
+small suite and these are single-fault, single-namespace problems with a
+`kubectl describe` away from the answer in several cases — `pvc-pending` is the
+only one requiring a non-obvious sequence. And a benchmark an agent passes
+completely has stopped discriminating; the next scenarios need to be harder.
+
+> [!NOTE]
+> **Gemini 3.6 Flash: one scenario of five, and that is a quota, not a result.**
+> It solved `configmap-key` on the first attempt with zero collateral damage —
+> 6 tool calls, 10,525 tokens, 59 seconds — before the free-tier daily allowance
+> ran out. A full sweep needs roughly 106 requests against a cap of 20 per day.
+> **Unmeasured is reported as unmeasured, never folded into a pass rate**, and
+> one complete column beside a one-cell column is not yet a like-for-like
+> comparison. At Flash pricing the missing sweep costs about **$0.40**; the
+> barrier is the request cap, not money.
 
 ### Reference run
 
@@ -273,7 +328,9 @@ sweep: a passing run finishes as soon as the checks pass (~55–65s, mostly
 cluster provisioning), while a failing run burns its full scenario timeout
 (~230–355s). A five-scenario noop sweep therefore takes about 25 minutes.
 
-Raw per-run records for both drivers are committed under `results/reference/`.
+Raw per-run records for the control drivers and for the `gpt-oss-120b` sweep are
+committed under `results/reference/`. The numbers on the results page are derived
+from those files rather than retyped, so the page and the evidence cannot drift.
 
 ## Design notes
 
@@ -289,9 +346,13 @@ applying one Deployment yields 6 created / **0 modified**.
 the moment it is issued, but the rollout is not. Grading immediately would fail
 correct answers and measure reaction time instead of competence.
 
-**Thinking tokens count as output.** Gemini 3 reasons before it answers and those
-tokens are billed as output, so omitting `thoughts_token_count` would understate
-the cost of exactly the models that reason hardest.
+**Reasoning tokens are counted once, per provider convention.** Both models think
+before answering and both bill it as output, but they report it differently:
+Gemini puts `thoughts_token_count` in a field of its own, which has to be added
+in, while Cerebras already includes `reasoning_tokens` inside
+`completion_tokens`. Getting either one wrong would misprice exactly the models
+that reason hardest, and would do it asymmetrically — a difference in the
+comparison coming from the harness rather than the models.
 
 **The agent gets one tool, `kubectl`.** Curated narrow tools like
 `scale_deployment` or `fix_image` would smuggle the answer into the tool surface
@@ -308,8 +369,11 @@ and measure the harness instead of the agent.
   yet; it would trade isolation for speed.
 - `kubectl exec` is permitted, and anything an agent does inside a container is
   invisible to the snapshot diff.
-- Only a Gemini driver ships today. The `AgentDriver` seam exists so K8sGPT and
-  others can be added and scored by identical machinery.
+- Two model drivers ship today, Gemini and Cerebras. The `AgentDriver` seam
+  exists so K8sGPT and others can be added and scored by identical machinery.
+- The Cerebras figures come from Cerebras's own serving stack, which is
+  speed-optimised. Latency and token counts for `gpt-oss-120b` served elsewhere
+  will differ; the provider is part of the result, not just the model id.
 
 ## Licence
 
